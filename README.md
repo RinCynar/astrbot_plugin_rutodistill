@@ -20,7 +20,7 @@
 
 ## 🛠️ 安装方法
 
-1. 使用本仓库地址https://github.com/RinCynar/astrbot_plugin_rutodistill进行安装即可
+1. 使用本仓库地址https://github.com/RinCynar/astrbot_plugin_rutodistill 进行安装即可
 
 ---
 
