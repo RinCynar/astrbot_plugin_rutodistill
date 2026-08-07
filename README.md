@@ -20,9 +20,7 @@
 
 ## 🛠️ 安装方法
 
-1. 将本仓库克隆或下载解压到 AstrBot 的 `data/plugins/astrbot_plugin_rutodistill` 目录。
-2. 插件会自动从 `requirements.txt` 安装所需依赖（如 `pydantic>=2.0.0`）。
-3. 在 AstrBot 管理面板中启用插件即可。
+1. 使用本仓库地址https://github.com/RinCynar/astrbot_plugin_rutodistill进行安装即可
 
 ---
 
