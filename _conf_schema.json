@@ -1,0 +1,33 @@
+{
+  "enable_auto_probes": {
+    "type": "bool",
+    "description": "启用自动探针",
+    "hint": "蒸馏模式下是否随机/低频产生探针引导提问",
+    "default": false
+  },
+  "probe_cooldown_turns": {
+    "type": "int",
+    "description": "探针冷却轮数",
+    "hint": "两次探针提问之间的最小有效消息轮数",
+    "default": 5
+  },
+  "convergence_threshold": {
+    "type": "float",
+    "description": "收敛阈值",
+    "hint": "评估 Profile 稳定程度的判定标准 (0.0 - 1.0)",
+    "default": 0.85
+  },
+  "decay_weight": {
+    "type": "float",
+    "description": "历史特征衰减权重",
+    "hint": "旧特征在增量合并时的保留权重 (0.1 - 0.9)",
+    "default": 0.7
+  },
+  "distill_model": {
+    "type": "string",
+    "description": "蒸馏模型指定",
+    "hint": "空则默认使用当前 Provider 模型",
+    "default": ""
+  }
+}
+

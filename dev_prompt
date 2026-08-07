@@ -1,0 +1,195 @@
+# 任务目标
+从零开发一个符合 AstrBot Star 插件规范（基于 AstrBot **v4.x 最新 API**，建议兼容 ≥4.11.4）的「人格蒸馏与克隆」插件：
+`astrbot_plugin_rutodistill`
+
+插件通过多轮交互事件监听、结构化增量特征提取与参数化 Profile 更新，对特定用户的语言风格、认知模式、价值观与行为习惯进行高精度数字蒸馏，并在不同模式下实现基于 System Prompt / extra_user_content 的自适应拟态对话。
+
+设计原则：
+- 与现有 `astrbot_plugin_self_learning` 等插件功能形成差异化（更侧重单用户主动多轮蒸馏 + 模式切换 + 可冻结 Profile）。
+- 优先复用 AstrBot 官方 Provider、事件钩子与存储规范，禁止臆造 API。
+- 所有持久化数据必须放在 `data/plugin_data/` 下，禁止写入插件代码目录。
+- 蒸馏分析必须异步后台执行，绝不阻塞主回复链路。
+- 健壮降级：任何 LLM/JSON 异常只记 debug 日志，保留原 Profile，不中断用户对话。
+
+---
+
+# 核心功能模块与技术设计规范
+
+## 1. 状态机与持久化管理
+- **多隔离级上下文**：
+  - 必须以 `session_id`（优先使用 `event.unified_msg_origin`，可回退到 `user_id`）为 Key 隔离用户状态。
+  - 每个 Context 独立维护运行时状态：
+    - `mode`: `"distill"` | `"chat"` | `"safe"`（默认 `"distill"`）
+    - `profile`: 字典结构，包含：
+      - `style`（语癖 / 语气词 / 标点惯性 / 句式习惯）
+      - `cognition`（思维逻辑 / 决策倾向 / 表达节奏）
+      - `values`（核心价值观 / 态度 / 偏好）
+      - `taboo`（禁忌 / 敏感点）
+      - `salutation`（常用称谓）
+      - 可扩展字段（如 `examples` 少量 few-shot 示例）
+    - `metrics`: 
+      - `turns_count`（已蒸馏有效轮数）
+      - `convergence_score`（0.0~1.0，基于特征稳定性与增量变化幅度计算）
+      - `last_update_ts`
+- **规范化持久化机制**：
+  - **绝对禁止**写入插件代码目录。
+  - 数据路径获取（优先顺序）：
+    1. 使用官方推荐方式（v4.9.2+）：
+       ```python
+       from pathlib import Path
+       from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+       data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_persona_distiller"
+       ```
+       或 `StarTools.get_data_dir()` / `self.name`（若可用）。
+    2. 轻量键值可优先使用插件自带的 `put_kv_data` / `get_kv_data`（≥4.9.2）。
+  - 实现 `JSONStore`（或基于 `sqlite3`/`aiosqlite` 的异步持久化类），支持：
+    - 变更时的防写穿 / 防竞态（`asyncio.Lock` 保护）
+    - 原子写入（先写临时文件再 replace）
+    - 启动时加载、模式切换后立即落盘
+  - `terminate` 中必须 flush 未保存数据并取消后台 task。
+
+## 2. 指令系统与模式路由
+使用 `@filter.command` 注册指令（支持前缀解析，遵循当前 wake_prefix）：
+
+| 指令 | 逻辑与响应要求 |
+|------|----------------|
+| `/distill` | 切换至「蒸馏学习」模式。后续用户消息触发后台 Profile 萃取；必要时可低频追加探针提问（可配置冷却）。 |
+| `/chat` | 切换至「拟态对话」模式。关闭后台蒸馏与探针，仅用当前 Profile 渲染 System Prompt 进行沉浸拟态。 |
+| `/safe` | 切换至「静态锚定」模式。冻结 Profile 增量更新，锁定当前版本为只读。 |
+| `/status` | 返回格式化 Markdown 卡片，展示：当前模式、蒸馏轮数、收敛度得分、核心特征标签摘要。 |
+| `/distill_reset` | 重置当前会话的 Profile 与 metrics，恢复初始化状态（需二次确认或直接执行，按配置）。 |
+| `/distill_export`（可选） | 将当前 Profile 导出为可读文本或可导入 AstrBot 原生 Persona 的格式。 |
+
+切换状态后必须同步触发持久化落盘，并对后续事件立即生效。
+
+## 3. 动态自适应蒸馏流水线（核心逻辑）
+- **事件 Hook 机制**（必须使用正确钩子）：
+  - **用户消息监听**（特征采集）：使用 `@filter.event_message_type(EventMessageType.ALL)`（或按需过滤私聊/群聊）。
+  - **LLM 请求注入**（拟态核心）：使用 `@filter.on_llm_request()`，签名为：
+    ```python
+    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+    ```
+    在此修改 `req.system_prompt`（稳定人格描述）或优先使用 `req.extra_user_content_parts`（动态/每轮变化内容，保护 prompt cache）。
+  - **绝对禁止**用 `@filter.on_decorating_result` 做特征提取或 Prompt 注入（该钩子仅用于装饰出站消息）。
+- **异步解耦**：
+  - 蒸馏分析逻辑（调用 LLM 评估 Profile 增量）必须通过 `asyncio.create_task` 提交后台执行，**绝对不得阻塞主回复链路**。
+  - 后台 task 需可被 `terminate` 取消，并用锁保护 Profile 写入。
+- **Profile 结构化解析与更新**：
+  - 使用严格 JSON Schema / Pydantic 模型限制 LLM 输出增量补丁（`ProfilePatch`）。
+  - 实现简易增量合并器（Merge Engine）：基于衰减权重或置信度更新特征描述，避免单次异常输入导致剧烈漂移。
+  - 收敛度计算需有明确规则（示例：最近 N 轮增量变化幅度越小，分数越高；可配置阈值）。
+- **动态 Prompt 渲染**：
+  - 在 `chat` 与 `distill` 模式下，通过 `on_llm_request` 将编译好的 Profile Prompt 注入。
+  - `safe` 模式下仍可注入，但禁止任何增量更新。
+  - 注意：稳定角色设定放 `system_prompt`；每轮变化内容放 `extra_user_content_parts`。
+- **健壮性与降级策略**：
+  - LLM 输出非标准 JSON、超时、空响应时，静默捕获异常并打 debug 日志，保留原 Profile。
+  - 禁止因插件异常导致用户正常对话中断或崩溃。
+  - 探针提问需有频率限制与用户可跳过机制。
+
+## 4. LLM 调用规范
+- 必须通过官方接口：`self.context.get_using_provider(umo=event.unified_msg_origin)` 或等价方法。
+- 禁止直接使用 `requests`；网络请求使用 `aiohttp` / `httpx` 等异步库（本插件主要走 Provider，一般不需要）。
+- 提取用模型可配置（默认跟随当前 Provider，或通过 `_conf_schema.json` 指定）。
+
+---
+
+# 严格开发规范（必须对齐 AstrBot 最新 API）
+
+1. **入口与生命周期**
+   - 必须继承 `from astrbot.api.star import Context, Star, register`
+   - 入口文件必须为 `main.py`，使用 `@register` 装饰器注册：
+     ```python
+     @register(
+         "astrbot_plugin_rutodistill",
+         "RinCynar",
+         "人格蒸馏与克隆插件：多轮交互高精度蒸馏用户语言风格、认知与价值观，并支持拟态对话",
+         "1.0.0",
+     )
+     class PersonaDistillerPlugin(Star):
+         def __init__(self, context: Context, config: dict = None):
+             super().__init__(context)
+             # 初始化数据存储、状态机、蒸馏引擎等
+     ```
+   - 必须实现 `async def terminate(self)`：flush 数据、取消后台任务、关闭连接。
+
+2. **元数据与配置**
+   - 根目录必须提供标准 `metadata.yaml`，至少包含：
+     ```yaml
+     name: astrbot_plugin_rutodistill
+     display_name: 人格蒸馏与克隆
+     desc: 通过多轮交互对用户语言风格、认知模式与价值观进行高精度蒸馏，支持 distill/chat/safe 模式切换与拟态对话。
+     version: 1.0.0
+     author: RinCynar
+     repo: https://github.com/RinCynar/astrbot_plugin_rutodistill
+     astrbot_version: ">=4.11.4"
+     tags:
+       - 人格
+       - 蒸馏
+       - 风格学习
+       - 拟态
+     ```
+   - 如需暴露配置（探针频率、增量 LLM 选择、衰减权重、收敛阈值、是否允许自动探针等），必须提供 `_conf_schema.json`，并在 `__init__` 接收 `AstrBotConfig`。
+
+3. **消息与事件处理 API**
+   - 使用 `from astrbot.api.event import filter, AstrMessageEvent`
+   - 使用 `from astrbot.api.provider import ProviderRequest`（on_llm_request 需要）
+   - 响应机制优先使用 `yield event.plain_result(...)` 或官方推荐方式。
+   - **禁止臆造 API**。
+
+4. **推荐目录结构**
+   ```text
+   astrbot_plugin_rutodistill/
+   ├── metadata.yaml
+   ├── main.py                     # 插件注册、指令、事件钩子路由
+   ├── _conf_schema.json           # 配置定义
+   ├── requirements.txt            # 依赖（至少 pydantic；如用 aiosqlite 则写上）
+   ├── README.md
+   ├── core/
+   │   ├── __init__.py
+   │   ├── state_machine.py        # 模式状态管理
+   │   ├── distiller.py            # 特征提取与增量合并引擎
+   │   └── prompt_builder.py       # Profile → System Prompt / extra 渲染
+   └── storage/
+       ├── __init__.py
+       └── json_store.py           # 基于 data/plugin_data 的异步持久化
+   ```
+
+---
+
+# 你需要完成的交付产物
+
+1. **完整的可运行代码实现**：模块化全量代码（非伪代码，不遗漏关键逻辑），可直接放入 `data/plugins/` 加载。
+2. **测试与健壮性处理**：
+   - JSON 提取失败的 try-except 容错
+   - 并发消息的状态锁控制
+   - 后台 task 生命周期管理
+   - 空 Profile / 首次蒸馏的优雅降级
+3. **标准 README.md**：
+   - 插件安装方法
+   - 指令表
+   - 配置说明
+   - 数据存储位置（`data/plugin_data/astrbot_plugin_rutodistill/`）
+   - 注意事项（隐私、与原生 Persona 的关系、成本提示）
+4. **简洁的技术架构设计说明**（在开始输出代码前，用简短几句话说明架构方案）。
+
+---
+
+# 开发日志与进度追踪
+
+* [x] 阶段一：项目骨架搭建与元数据配置（metadata.yaml、_conf_schema.json、main.py 注册、目录结构）
+* [x] 阶段二：数据持久化层实现（data/plugin_data 安全异步读写 + 锁 + 原子写入）
+* [x] 阶段三：会话状态机与模式路由命令实现（/distill、/chat、/safe、/status、/distill_reset）
+* [x] 阶段四：后台异步蒸馏萃取引擎与 Profile 增量合并算法实现
+* [x] 阶段五：动态 System Prompt / extra_user_content 渲染与 on_llm_request 注入
+* [x] 阶段六：异常降级测试、代码注释补全、README.md 输出、可选导出 Persona
+
+---
+
+# 额外约束（给实现者的硬性要求）
+1. 所有代码必须可直接运行，禁止使用未在官方文档出现的 API。
+2. 使用 `astrbot.api.logger` 记录日志。
+3. 提交前建议用 ruff 格式化。
+4. 不要引入 `requests`。
+5. Profile 中涉及用户隐私数据，默认本地存储，提供清空指令。
+6. 收敛度与探针逻辑必须有可配置参数和合理默认值，禁止硬编码魔法数字散落各处。

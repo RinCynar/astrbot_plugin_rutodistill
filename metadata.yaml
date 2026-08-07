@@ -1,0 +1,12 @@
+name: astrbot_plugin_rutodistill
+display_name: 人格蒸馏与克隆
+desc: 通过多轮交互对用户语言风格、认知模式与价值观进行高精度蒸馏，支持 distill/chat/safe 模式切换与拟态对话。
+version: 1.0.0
+author: RinCynar
+repo: https://github.com/RinCynar/astrbot_plugin_rutodistill
+astrbot_version: ">=4.11.4"
+tags:
+  - 人格
+  - 蒸馏
+  - 风格学习
+  - 拟态
