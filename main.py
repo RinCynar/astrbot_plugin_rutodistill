@@ -46,6 +46,15 @@ class PersonaDistillerPlugin(Star):
             distill_model_cfg = [distill_model_cfg] if distill_model_cfg else []
         self.distill_models = [m for m in distill_model_cfg if m and isinstance(m, str)]
         self.bg_tasks = set()
+        # 启动后台任务填充配置面板「蒸馏模型指定」下拉框选项。
+        # on_astrbot_loaded 仅在 AstrBot 启动时触发一次，运行中安装/重载插件时
+        # 不会触发，因此额外启动带重试的后台任务，保证下拉框能取到模型列表。
+        try:
+            task = asyncio.create_task(self._background_populate_options())
+            self.bg_tasks.add(task)
+            task.add_done_callback(self.bg_tasks.discard)
+        except Exception as e:
+            logger.debug(f"[rutodistill] Could not start model options background task: {e}")
 
     def _get_session_id(self, event: AstrMessageEvent) -> str:
         if hasattr(event, "unified_msg_origin") and event.unified_msg_origin:
@@ -143,23 +152,8 @@ class PersonaDistillerPlugin(Star):
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
 
-        provider = None
-        try:
-            umo = getattr(event, "unified_msg_origin", None)
-            provider = self.context.get_using_provider(umo=umo)
-            if asyncio.iscoroutine(provider):
-                provider = await provider
-        except Exception as e:
-            logger.debug(f"[rutodistill] Could not fetch provider: {e}")
-
-        available_models: list[str] = []
-        if provider is not None:
-            try:
-                available_models = list(await provider.get_models() or [])
-            except Exception as e:
-                logger.debug(f"[rutodistill] Could not fetch provider models: {e}")
-        # 同步刷新配置面板下拉框选项
-        self._update_schema_options(available_models)
+        # 拉取模型列表（含 get_models 失败时的当前模型兜底），并同步刷新配置面板下拉框选项
+        available_models: list[str] = await self._refresh_model_options()
 
         arg = (model or "").strip()
         lowered = arg.lower()
@@ -319,34 +313,64 @@ class PersonaDistillerPlugin(Star):
         if isinstance(schema, dict) and isinstance(schema.get("distill_model"), dict):
             schema["distill_model"]["options"] = [m for m in models if m]
 
+    async def _refresh_model_options(self) -> list:
+        """拉取所有可用对话 Provider 的模型列表，写入 schema 的 options，并返回模型列表。
+
+        任一 Provider 的 get_models() 失败或返回空时，回退到其当前模型（get_model()），
+        保证下拉框至少有一个可用项。
+        """
+        available: list[str] = []
+        providers: list = []
+        try:
+            providers = list(self.context.get_all_providers() or [])
+        except Exception as e:
+            logger.debug(f"[rutodistill] get_all_providers failed: {e}")
+        if not providers:
+            try:
+                provider = self.context.get_using_provider()
+                if provider:
+                    providers = [provider]
+            except Exception as e:
+                logger.debug(f"[rutodistill] get_using_provider failed: {e}")
+
+        for provider in providers:
+            models: list = []
+            try:
+                models = list(await provider.get_models() or [])
+            except Exception as e:
+                logger.debug(f"[rutodistill] get_models failed: {e}")
+            if not models:
+                try:
+                    current = provider.get_model()
+                    if current:
+                        models = [current]
+                except Exception as e:
+                    logger.debug(f"[rutodistill] get_model failed: {e}")
+            for m in models:
+                if m and m not in available:
+                    available.append(m)
+
+        self._update_schema_options(available)
+        return available
+
+    async def _background_populate_options(self):
+        """带重试的后台任务：等待 Provider 就绪后填充配置面板「蒸馏模型指定」下拉框选项。"""
+        for attempt in range(6):
+            try:
+                available = await self._refresh_model_options()
+                if available:
+                    logger.info(f"[rutodistill] 配置面板模型选项已填充（{len(available)} 个）。")
+                    return
+            except Exception as e:
+                logger.debug(f"[rutodistill] populate model options attempt {attempt} failed: {e}")
+            await asyncio.sleep(5)
+        logger.debug("[rutodistill] 未能获取到模型列表，配置面板模型下拉框保持为空。")
+
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
-        """AstrBot 加载完成后，将当前 Provider 启用的模型列表填充到配置面板「蒸馏模型指定」下拉框"""
+        """AstrBot 启动加载完成后，将当前 Provider 启用的模型列表填充到配置面板「蒸馏模型指定」下拉框"""
         try:
-            available: list[str] = []
-            providers: list = []
-            try:
-                providers = list(self.context.get_all_providers() or [])
-            except Exception as e:
-                logger.debug(f"[rutodistill] get_all_providers failed: {e}")
-            if not providers:
-                try:
-                    provider = self.context.get_using_provider()
-                    if provider:
-                        providers = [provider]
-                except Exception as e:
-                    logger.debug(f"[rutodistill] get_using_provider failed: {e}")
-
-            for provider in providers:
-                try:
-                    models = await provider.get_models()
-                    for m in (models or []):
-                        if m and m not in available:
-                            available.append(m)
-                except Exception as e:
-                    logger.debug(f"[rutodistill] get_models failed: {e}")
-
-            self._update_schema_options(available)
+            available = await self._refresh_model_options()
             logger.info(f"[rutodistill] 已向配置面板注入 {len(available)} 个模型选项。")
         except Exception as e:
             logger.debug(f"[rutodistill] on_astrbot_loaded error: {e}")
