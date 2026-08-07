@@ -47,7 +47,7 @@
 - `probe_cooldown_turns`: 两次探针提问间的最小消息轮数（默认 `5`）
 - `convergence_threshold`: 判定收敛阈值 `0.0 ~ 1.0`（默认 `0.85`）
 - `decay_weight`: 历史特征衰减权重（默认 `0.7`）
-- `distill_model`: 蒸馏模型指定（列表，可维护多个候选模型名）。留空则跟随当前 Provider 默认模型；也可在聊天中使用 `/distill_model` 指令从当前 Provider 启用的模型中直接选择。
+- `distill_model`: 蒸馏模型指定。配置面板中会渲染为**下拉选择框**（AstrBot 启动后自动从当前 Provider 启用的模型中填充选项）；留空则跟随 Provider 默认模型。也可在聊天中使用 `/distill_model` 指令从当前 Provider 启用的模型中直接选择。
 
 > 蒸馏模型的生效优先级：**会话级 `/distill_model` 设置 > 全局配置 `distill_model` 首个候选 > Provider 默认模型**。
 

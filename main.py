@@ -33,7 +33,9 @@ from .core.prompt_builder import PromptBuilder
 class PersonaDistillerPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.config = config or {}
+        # 保留 AstrBotConfig 实例引用（其 .schema 属性会被配置面板动态读取，
+        # 用于运行时注入「蒸馏模型指定」下拉框的模型选项）
+        self.config = config if config is not None else {}
         self.store = JSONStore("astrbot_plugin_rutodistill")
         decay_weight = self.config.get("decay_weight", 0.7)
         convergence_threshold = self.config.get("convergence_threshold", 0.85)
@@ -156,6 +158,8 @@ class PersonaDistillerPlugin(Star):
                 available_models = list(await provider.get_models() or [])
             except Exception as e:
                 logger.debug(f"[rutodistill] Could not fetch provider models: {e}")
+        # 同步刷新配置面板下拉框选项
+        self._update_schema_options(available_models)
 
         arg = (model or "").strip()
         lowered = arg.lower()
@@ -304,6 +308,48 @@ class PersonaDistillerPlugin(Star):
                     req.extra_user_content_parts.append(TextPart(text=extra_content))
         except Exception as e:
             logger.debug(f"[rutodistill] Error in on_llm_request prompt injection: {e}")
+
+    def _update_schema_options(self, models: list) -> None:
+        """将模型列表写入插件配置 schema 的 options，使 WebUI 渲染为下拉选择框。
+
+        self.config 与 AstrBot 的 plugin_md.config 是同一实例，
+        配置面板 API (get_plugin_config) 会动态读取其 .schema，因此修改立即可见。
+        """
+        schema = getattr(self.config, "schema", None)
+        if isinstance(schema, dict) and isinstance(schema.get("distill_model"), dict):
+            schema["distill_model"]["options"] = [m for m in models if m]
+
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self):
+        """AstrBot 加载完成后，将当前 Provider 启用的模型列表填充到配置面板「蒸馏模型指定」下拉框"""
+        try:
+            available: list[str] = []
+            providers: list = []
+            try:
+                providers = list(self.context.get_all_providers() or [])
+            except Exception as e:
+                logger.debug(f"[rutodistill] get_all_providers failed: {e}")
+            if not providers:
+                try:
+                    provider = self.context.get_using_provider()
+                    if provider:
+                        providers = [provider]
+                except Exception as e:
+                    logger.debug(f"[rutodistill] get_using_provider failed: {e}")
+
+            for provider in providers:
+                try:
+                    models = await provider.get_models()
+                    for m in (models or []):
+                        if m and m not in available:
+                            available.append(m)
+                except Exception as e:
+                    logger.debug(f"[rutodistill] get_models failed: {e}")
+
+            self._update_schema_options(available)
+            logger.info(f"[rutodistill] 已向配置面板注入 {len(available)} 个模型选项。")
+        except Exception as e:
+            logger.debug(f"[rutodistill] on_astrbot_loaded error: {e}")
 
     async def terminate(self):
         """销毁插件：取消所有后台异步 Task 并刷新保存数据"""

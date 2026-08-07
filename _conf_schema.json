@@ -26,8 +26,9 @@
   "distill_model": {
     "type": "list",
     "description": "蒸馏模型指定",
-    "hint": "留空则跟随当前 Provider 的默认模型；可添加多个候选模型名（取第一个生效）。也可在聊天中使用 /distill_model 指令从当前 Provider 启用的模型中直接选择。",
-    "default": []
+    "hint": "从当前 Provider 启用的模型中选择（AstrBot 启动后自动填充选项）；留空则跟随 Provider 默认模型。也可在聊天中使用 /distill_model 指令查看与设置。",
+    "default": [],
+    "options": []
   }
 }
 
