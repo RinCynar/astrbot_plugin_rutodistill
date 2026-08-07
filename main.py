@@ -38,6 +38,11 @@ class PersonaDistillerPlugin(Star):
         decay_weight = self.config.get("decay_weight", 0.7)
         convergence_threshold = self.config.get("convergence_threshold", 0.85)
         self.engine = DistillerEngine(decay_weight=decay_weight, convergence_threshold=convergence_threshold)
+        # 全局蒸馏模型候选（_conf_schema.json 中 distill_model，兼容字符串或列表）
+        distill_model_cfg = self.config.get("distill_model") or []
+        if isinstance(distill_model_cfg, str):
+            distill_model_cfg = [distill_model_cfg] if distill_model_cfg else []
+        self.distill_models = [m for m in distill_model_cfg if m and isinstance(m, str)]
         self.bg_tasks = set()
 
     def _get_session_id(self, event: AstrMessageEvent) -> str:
@@ -130,6 +135,84 @@ class PersonaDistillerPlugin(Star):
         )
         yield event.plain_result(export_text)
 
+    @filter.command("distill_model")
+    async def cmd_distill_model(self, event: AstrMessageEvent, model: str = ""):
+        """查看/设置当前会话的蒸馏模型；不带参数时列出当前 Provider 启用的模型供选择"""
+        session_id = self._get_session_id(event)
+        state = await self._get_state(session_id)
+
+        provider = None
+        try:
+            umo = getattr(event, "unified_msg_origin", None)
+            provider = self.context.get_using_provider(umo=umo)
+            if asyncio.iscoroutine(provider):
+                provider = await provider
+        except Exception as e:
+            logger.debug(f"[rutodistill] Could not fetch provider: {e}")
+
+        available_models: list[str] = []
+        if provider is not None:
+            try:
+                available_models = list(await provider.get_models() or [])
+            except Exception as e:
+                logger.debug(f"[rutodistill] Could not fetch provider models: {e}")
+
+        arg = (model or "").strip()
+        lowered = arg.lower()
+
+        if not arg:
+            # 展示当前设置与可用模型列表
+            current = state.model or (self.distill_models[0] if self.distill_models else "")
+            cfg_models = "、".join(f"`{m}`" for m in self.distill_models) or "（未配置）"
+            lines = [
+                "🧬 **蒸馏模型设置**",
+                f"• 当前蒸馏模型：`{current or '（跟随 Provider 默认）'}`",
+                f"• 全局配置候选：{cfg_models}",
+                "",
+                "📋 **当前 Provider 启用的模型：**",
+            ]
+            if available_models:
+                for i, m in enumerate(available_models, 1):
+                    marker = "✅" if m == current else "•"
+                    lines.append(f"{i}. {marker} `{m}`")
+                lines.append("")
+                lines.append("用法：`/distill_model <序号或模型名>` 设置；`/distill_model clear` 恢复默认。")
+            else:
+                lines.append("（无法获取当前 Provider 的模型列表）")
+                lines.append("可直接使用 `/distill_model <模型名>` 手动指定。")
+            yield event.plain_result("\n".join(lines))
+            return
+
+        if lowered in ("clear", "reset", "off", "none"):
+            state.model = ""
+            await self._save_state(session_id, state)
+            yield event.plain_result("已清除会话级蒸馏模型设置，蒸馏将跟随全局配置 / Provider 默认模型。")
+            return
+
+        target = ""
+        if arg.isdigit():
+            idx = int(arg)
+            if available_models and 1 <= idx <= len(available_models):
+                target = available_models[idx - 1]
+            else:
+                yield event.plain_result(
+                    f"序号 {idx} 无效，当前 Provider 共列出 {len(available_models)} 个模型。"
+                )
+                return
+        else:
+            target = arg
+
+        if available_models and target not in available_models:
+            yield event.plain_result(
+                f"`{target}` 不在当前 Provider 的模型列表中（共 {len(available_models)} 个）。"
+                "请输入 `/distill_model` 查看列表后重试，或确认模型名拼写。"
+            )
+            return
+
+        state.model = target
+        await self._save_state(session_id, state)
+        yield event.plain_result(f"已将当前会话的蒸馏模型设置为：`{target}`")
+
     def _json_dumps(self, data: dict) -> str:
         import json
         return json.dumps(data, ensure_ascii=False, indent=2)
@@ -179,10 +262,16 @@ class PersonaDistillerPlugin(Star):
                 f"【用户最新输入】\n{msg_str}"
             )
 
-            res = await provider.text_chat(
-                prompt=user_prompt,
-                system_prompt=EXTRACTION_SYSTEM_PROMPT
-            )
+            # 蒸馏模型优先级：会话级覆盖 > 全局配置首个候选 > Provider 默认
+            distill_model = state.model or (self.distill_models[0] if self.distill_models else "")
+            text_chat_kwargs: Dict[str, Any] = {
+                "prompt": user_prompt,
+                "system_prompt": EXTRACTION_SYSTEM_PROMPT,
+            }
+            if distill_model:
+                text_chat_kwargs["model"] = distill_model
+
+            res = await provider.text_chat(**text_chat_kwargs)
 
             raw_text = getattr(res, "completion_text", str(res))
             patch = self.engine.parse_patch_json(raw_text)

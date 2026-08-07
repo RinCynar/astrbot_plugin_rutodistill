@@ -41,16 +41,20 @@ class SessionState:
         mode: str = MODE_DISTILL,
         profile: PersonaProfile = None,
         metrics: SessionMetrics = None,
+        model: str = "",
     ):
         self.mode = mode if mode in (self.MODE_DISTILL, self.MODE_CHAT, self.MODE_SAFE) else self.MODE_DISTILL
         self.profile = profile or PersonaProfile()
         self.metrics = metrics or SessionMetrics()
+        self.model = model or ""
+        """会话级蒸馏模型覆盖；空字符串表示跟随全局配置 / Provider 默认模型"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
             "profile": self.profile.to_dict(),
             "metrics": self.metrics.to_dict(),
+            "model": self.model,
         }
 
     @classmethod
@@ -61,4 +65,5 @@ class SessionState:
             mode=data.get("mode", cls.MODE_DISTILL),
             profile=PersonaProfile.from_dict(data.get("profile", {})),
             metrics=SessionMetrics.from_dict(data.get("metrics", {})),
+            model=data.get("model", ""),
         )
