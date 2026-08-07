@@ -200,16 +200,16 @@ class PersonaDistillerPlugin(Star):
         else:
             target = arg
 
-        if available_models and target not in available_models:
-            yield event.plain_result(
-                f"`{target}` 不在当前 Provider 的模型列表中（共 {len(available_models)} 个）。"
-                "请输入 `/distill_model` 查看列表后重试，或确认模型名拼写。"
-            )
-            return
-
+        # 允许设置任意模型名；若不在当前已配置的模型列表中则给出提示
         state.model = target
         await self._save_state(session_id, state)
-        yield event.plain_result(f"已将当前会话的蒸馏模型设置为：`{target}`")
+        if available_models and target not in available_models:
+            yield event.plain_result(
+                f"已将当前会话的蒸馏模型设置为：`{target}`"
+                f"（注意：该模型不在当前已配置的模型列表中，请确认拼写无误）"
+            )
+        else:
+            yield event.plain_result(f"已将当前会话的蒸馏模型设置为：`{target}`")
 
     def _json_dumps(self, data: dict) -> str:
         import json
@@ -314,10 +314,14 @@ class PersonaDistillerPlugin(Star):
             schema["distill_model"]["options"] = [m for m in models if m]
 
     async def _refresh_model_options(self) -> list:
-        """拉取所有可用对话 Provider 的模型列表，写入 schema 的 options，并返回模型列表。
+        """收集用户实际在 AstrBot「模型提供商」中启用/勾选的模型，写入 schema 的 options 并返回。
 
-        任一 Provider 的 get_models() 失败或返回空时，回退到其当前模型（get_model()），
-        保证下拉框至少有一个可用项。
+        数据来源：
+        1. 每个已启用（enable=True）的对话 Provider 实例配置的 model（provider.get_model()）；
+        2. provider_settings.fallback_chat_models（用户显式配置的回退模型）。
+
+        不使用 get_models()：它返回的是 API key 支持的全部模型，
+        而非用户在「模型提供商」中勾选启用的模型。
         """
         available: list[str] = []
         providers: list = []
@@ -333,22 +337,26 @@ class PersonaDistillerPlugin(Star):
             except Exception as e:
                 logger.debug(f"[rutodistill] get_using_provider failed: {e}")
 
+        fallback_models: list[str] = []
         for provider in providers:
-            models: list = []
+            # 1) 该 Provider 配置中勾选启用的模型
             try:
-                models = list(await provider.get_models() or [])
-            except Exception as e:
-                logger.debug(f"[rutodistill] get_models failed: {e}")
-            if not models:
-                try:
-                    current = provider.get_model()
-                    if current:
-                        models = [current]
-                except Exception as e:
-                    logger.debug(f"[rutodistill] get_model failed: {e}")
-            for m in models:
+                m = provider.get_model()
                 if m and m not in available:
                     available.append(m)
+            except Exception as e:
+                logger.debug(f"[rutodistill] get_model failed: {e}")
+            # 2) 用户显式配置的回退模型（所有 Provider 共享同一 provider_settings）
+            try:
+                settings = getattr(provider, "provider_settings", None)
+                if settings and not fallback_models:
+                    fallback_models = list(settings.get("fallback_chat_models") or [])
+            except Exception as e:
+                logger.debug(f"[rutodistill] read fallback_chat_models failed: {e}")
+
+        for m in fallback_models:
+            if m and m not in available:
+                available.append(m)
 
         self._update_schema_options(available)
         return available
