@@ -1,4 +1,5 @@
 import asyncio
+import random
 from typing import Dict, Any
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -22,6 +23,28 @@ from .storage.json_store import JSONStore
 from .core.state_machine import SessionState, PersonaProfile, SessionMetrics
 from .core.distiller import DistillerEngine, EXTRACTION_SYSTEM_PROMPT
 from .core.prompt_builder import PromptBuilder
+
+# 首次进入蒸馏模式时抛出的引导话题（开放式、易引出个人表达风格）
+ICE_BREAKER_TOPICS = [
+    "如果明天可以完全自由地安排一整天，没有任何限制，你会怎么过？",
+    "你最近单曲循环的一首歌是什么？它为什么打动你？",
+    "用一个词形容你此刻的状态，并说说为什么选它。",
+    "你做过最疯狂的一件事是什么？",
+    "如果只能带三样东西去荒岛生活，你会带什么？",
+    "你最近一次发自内心的开心是因为什么？",
+    "你最想改掉的一个小毛病是什么？",
+    "如果人生可以重来一次，你最想改变哪个决定？",
+    "你理想中的完美一天是怎么样的？",
+    "哪部电影、书或游戏对你的影响最大？为什么？",
+    "你觉得自己最鲜明的性格标签是什么？",
+    "如果突然得到一笔意外之财，你第一时间会做什么？",
+    "你最近在为什么事情烦恼？",
+    "描述一下你最喜欢的食物带给你的感受。",
+    "你觉得什么样的人最有魅力？",
+    "如果可以和任何人共进晚餐，你会选谁？",
+    "你坚持最久的一个习惯是什么？",
+    "你更相信直觉还是逻辑？为什么？",
+]
 
 
 @register(
@@ -75,9 +98,25 @@ class PersonaDistillerPlugin(Star):
         """切换至「蒸馏学习」模式"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
+        # 首次进入蒸馏模式（尚无任何蒸馏数据）时，主动抛出随机话题引导对话，
+        # 避免出现公式化的"有什么可以帮您"。
+        is_first_enter = (
+            state.metrics.turns_count == 0
+            and not state.profile.style
+            and not state.profile.cognition
+            and not state.profile.values
+        )
         state.mode = SessionState.MODE_DISTILL
         await self._save_state(session_id, state)
-        yield event.plain_result("已切换至【蒸馏学习】模式。系统将在后续对话中进行增量特征萃取与 Profile 更新。")
+        if is_first_enter:
+            topic = random.choice(ICE_BREAKER_TOPICS)
+            yield event.plain_result(
+                "已切换至【蒸馏学习】模式。系统将在后续对话中增量萃取你的表达风格。\n\n"
+                "🎯 **先来聊聊这个吧**：\n"
+                f"{topic}"
+            )
+        else:
+            yield event.plain_result("已切换至【蒸馏学习】模式。系统将在后续对话中进行增量特征萃取与 Profile 更新。")
 
     @filter.command("chat")
     async def mode_chat(self, event: AstrMessageEvent):
@@ -131,19 +170,24 @@ class PersonaDistillerPlugin(Star):
         yield event.plain_result("已成功重置当前会话的人格 Profile 与统计指标。")
 
     @filter.command("distill_export")
-    async def export_profile(self, event: AstrMessageEvent):
-        """导出当前 Profile 格式数据"""
+    async def export_profile(self, event: AstrMessageEvent, format: str = ""):
+        """导出当前 Profile：默认输出可直接粘贴进 AstrBot 人格设定的 markdown；/distill_export json 输出原始数据"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
-        sys_prompt, _ = PromptBuilder.build_prompts(state.profile, state.mode)
-        export_text = (
-            "📦 **Profile 导出数据**\n"
-            "```json\n"
-            f"{self._json_dumps(state.profile.to_dict())}\n"
-            "```\n\n"
-            "📝 **拟态 System Prompt 预览**：\n"
-            f"{sys_prompt or '（未形成系统提示词）'}"
-        )
+        fmt = (format or "").strip().lower()
+        if fmt == "json":
+            export_text = (
+                "📦 **Profile 原始数据（JSON）**\n"
+                "```json\n"
+                f"{self._json_dumps(state.profile.to_dict())}\n"
+                "```"
+            )
+        else:
+            persona = PromptBuilder.build_persona_markdown(state.profile)
+            export_text = (
+                "🧬 **可粘贴进 AstrBot 人格设定的人设 Prompt**\n\n"
+                f"{persona}"
+            )
         yield event.plain_result(export_text)
 
     @filter.command("distill_model")
@@ -223,6 +267,15 @@ class PersonaDistillerPlugin(Star):
         msg_str = event.message_str.strip()
         if not msg_str or msg_str.startswith("/"):
             return
+
+        # 跳过指令消息：AstrBot 在指令 handler 匹配成功时会向事件写入
+        # handlers_parsed_params。这在带唤醒前缀（如 "bot status" 被剥成
+        # "status"、不带 "/" 前缀）导致 startswith("/") 检查失效时尤为关键。
+        try:
+            if event.get_extra("handlers_parsed_params", {}):
+                return
+        except Exception as e:
+            logger.debug(f"[rutodistill] check handlers_parsed_params failed: {e}")
 
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)

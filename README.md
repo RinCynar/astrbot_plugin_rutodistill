@@ -30,13 +30,15 @@
 
 | 指令 | 说明 |
 | --- | --- |
-| `/distill` | 切换至「蒸馏学习」模式 |
+| `/distill` | 切换至「蒸馏学习」模式；**首次进入会自动抛出一个随机话题**引导对话 |
 | `/chat` | 切换至「拟态对话」模式 |
 | `/safe` | 切换至「静态锚定」模式 |
 | `/status` | 查看当前蒸馏轮数、收敛度及 Profile 特征卡片 |
 | `/distill_model` | 查看当前 Provider 启用的模型列表并设置/清除蒸馏模型（支持序号或模型名） |
 | `/distill_reset` | 重置当前会话的 Profile 与指标 |
-| `/distill_export` | 导出 Profile 结构化数据与 System Prompt 预览 |
+| `/distill_export` | 导出可直接粘贴进 AstrBot 人格设定的人设 Prompt（markdown）；`/distill_export json` 可输出原始 Profile 数据 |
+
+> 指令消息（如 `/status`）会被自动识别并**跳过蒸馏**，不会被当作个人风格学习。普通对话消息才会参与蒸馏。
 
 ---
 
@@ -76,7 +78,8 @@
 4. 检查数据落盘文件：
    `data/plugin_data/astrbot_plugin_rutodistill/<会话ID>.json`
    `profile` 下的 `style`/`cognition`/`values` 等字段应出现与你的表达风格匹配的内容，`metrics.turns_count` 应为正数。
-5. 发送 `/distill_export`，确认能导出结构化的 Profile JSON 与拟态 System Prompt 预览。
+5. 发送 `/distill_export`，应导出一份**可直接复制粘贴进 AstrBot 人格设定**的 markdown 人设 Prompt（`/distill_export json` 可查看原始 Profile 数据）。
+6. 首次进入 `/distill` 模式时，机器人应**主动抛出一个随机话题**（而非"有什么可以帮您"）；此时请顺着话题多聊几句，有助于快速积累风格特征。
 
 > 蒸馏为**后台异步任务**，回复本身不等待蒸馏结果，因此请稍等片刻再查 `/status`。
 
