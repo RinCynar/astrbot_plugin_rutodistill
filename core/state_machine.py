@@ -30,6 +30,7 @@ class SessionMetrics(BaseModel):
     convergence_score: float = Field(default=0.0, description="收敛度得分 0.0-1.0")
     last_update_ts: float = Field(default=0.0, description="最后更新时间戳")
     change_history: list[float] = Field(default_factory=list, description="最近 N 轮特征变化幅度历史（用于科学计算收敛度）")
+    details_last_merge_ts: float = Field(default=0.0, description="细节库最近一次定期整理的时间戳（0 = 尚未整理过）")
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -44,6 +45,7 @@ class SessionMetrics(BaseModel):
             convergence_score=float(data.get("convergence_score", 0.0) or 0.0),
             last_update_ts=float(data.get("last_update_ts", 0.0) or 0.0),
             change_history=[float(x) for x in (data.get("change_history") or [])],
+            details_last_merge_ts=float(data.get("details_last_merge_ts", 0.0) or 0.0),
         )
 
 

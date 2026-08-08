@@ -49,6 +49,15 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析�
 - 绝不编造或夸大，保持实事求是。只输出纯 JSON 数据，不要包含 markdown 代码块。"""
 
 
+CONSOLIDATE_SYSTEM_PROMPT = """你是细节档案整理助手，负责无损整理一份「表达细节」清单。
+
+规则：
+- 仅合并**完全重复**或**明显近义**（同一习惯/同一现象的不同说法）的条目；合并结果须保留各原条目包含的全部信息，合并到其中一条所在的位置。
+- 严格保持清单原有顺序；不要重排、不要新增条目、不要编造。
+- 除被合并的条目外，其余条目必须**逐字原样保留**；绝对禁止删除、改写、概括或压缩任何独有的细节，禁止把多个不同细节合并成一条概括。
+- 输出必须为且仅为合法 JSON：{"details": ["条目1", "条目2", ...]}，不要输出其它任何内容或解释。"""
+
+
 class ProfilePatch(BaseModel):
     style: str = Field(default="")
     cognition: str = Field(default="")
@@ -68,13 +77,11 @@ class DistillerEngine:
         convergence_threshold: float = 0.85,
         change_window: int = 5,
         max_examples: int = 200,
-        max_details: int = 1000,
     ):
         self.decay_weight = decay_weight
         self.convergence_threshold = convergence_threshold
         self.change_window = max(1, int(change_window))
         self.max_examples = max(5, int(max_examples))
-        self.max_details = max(50, int(max_details))
 
     def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
         if not raw_text:
@@ -90,6 +97,23 @@ class DistillerEngine:
         except Exception as e:
             logger.debug(f"[rutodistill] Failed to parse JSON patch from LLM output: {e}. Raw: {raw_text[:100]}")
             return None
+
+    def parse_consolidate_json(self, raw_text: str) -> Optional[list]:
+        """解析细节库整理结果 JSON（{"details": [...]}），失败返回 None。"""
+        if not raw_text:
+            return None
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+        try:
+            data = json.loads(cleaned)
+            details = data.get("details")
+            if isinstance(details, list):
+                return [str(d).strip() for d in details if str(d).strip()]
+        except Exception as e:
+            logger.debug(f"[rutodistill] Failed to parse consolidation JSON: {e}. Raw: {raw_text[:100]}")
+        return None
 
     @staticmethod
     def _change_magnitude(current: str, new: str) -> float:
@@ -140,9 +164,8 @@ class DistillerEngine:
                 added.append(d)
                 existing.add(d)
             if added:
+                # 细节库不设上限：长期记忆随轮次无限累积，重复/近义由定期整理（CONSOLIDATE）合并
                 profile.details = list(profile.details or []) + added
-                if len(profile.details) > self.max_details:
-                    profile.details = profile.details[-self.max_details:]
                 changes.append(0.3)  # 新增细节库条目视为小幅变化
 
         metrics.turns_count += 1

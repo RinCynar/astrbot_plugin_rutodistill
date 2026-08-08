@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 from typing import Dict, Any
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -21,7 +22,7 @@ except ImportError:
 
 from .storage.json_store import JSONStore
 from .core.state_machine import SessionState, PersonaProfile, SessionMetrics
-from .core.distiller import DistillerEngine, EXTRACTION_SYSTEM_PROMPT
+from .core.distiller import DistillerEngine, EXTRACTION_SYSTEM_PROMPT, CONSOLIDATE_SYSTEM_PROMPT
 from .core.prompt_builder import PromptBuilder
 
 # 首次进入蒸馏模式时抛出的引导话题（开放式、易引出个人表达风格）
@@ -51,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.7",
+    "1.0.8",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -75,6 +76,13 @@ class PersonaDistillerPlugin(Star):
         if isinstance(distill_model_cfg, str):
             distill_model_cfg = [distill_model_cfg] if distill_model_cfg else []
         self.distill_models = [m for m in distill_model_cfg if m and isinstance(m, str)]
+        # 开场词使用概率（0-100，默认 50）：掌握开场词后，回复以开场词开头的目标比例
+        try:
+            self.opening_word_use_prob = max(0, min(100, int(self.config.get("opening_word_use_prob", 50) or 50)))
+        except (TypeError, ValueError):
+            self.opening_word_use_prob = 50
+        # 细节库定期整理周期（秒）："从不"（或非法值映射为每周兜底）；0 = 不整理，仅保留写入时精确去重
+        self.details_merge_interval_sec = self._resolve_merge_interval(self.config.get("detail_merge_interval", "每周"))
         self.bg_tasks = set()
         # 每个会话一把锁，串行化后台蒸馏任务，防止并发消息互相覆盖已累积的历史/特征
         self._session_locks: Dict[str, asyncio.Lock] = {}
@@ -316,6 +324,31 @@ class PersonaDistillerPlugin(Star):
         import json
         return json.dumps(data, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def _resolve_merge_interval(value) -> int:
+        """将 detail_merge_interval 配置值解析为秒数；0 表示从不整理（仅保留写入时精确去重）。"""
+        mapping = {
+            "每天": 1 * 86400,
+            "每三天": 3 * 86400,
+            "每周": 7 * 86400,
+            "每半个月": 15 * 86400,
+            "每个月": 30 * 86400,
+            "从不": 0,
+            # 兼容英文/旧值
+            "daily": 1 * 86400,
+            "every_3_days": 3 * 86400,
+            "weekly": 7 * 86400,
+            "half_month": 15 * 86400,
+            "monthly": 30 * 86400,
+            "never": 0,
+        }
+        if isinstance(value, str) and value in mapping:
+            return mapping[value]
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 7 * 86400  # 非法值兜底为每周
+
     # --- 事件钩子 ---
 
     @filter.event_message_type(EventMessageType.ALL)
@@ -383,6 +416,8 @@ class PersonaDistillerPlugin(Star):
                     updated_state = self.engine.merge_patch(state, patch)
                     await self._save_state(session_id, updated_state)
                     logger.debug(f"[rutodistill] Session {session_id} updated profile patch successfully.")
+                    # 按配置周期定期整理细节库：无损合并重复/近义条目（周期未到或设置为“从不”时直接跳过）
+                    await self._maybe_consolidate_details(provider, session_id, updated_state)
         except Exception as e:
             logger.debug(f"[rutodistill] Error during async background distillation worker: {e}")
 
@@ -412,6 +447,75 @@ class PersonaDistillerPlugin(Star):
         lines.append(f"【用户最新输入（逐字原文，含原始空格与缺失标点）】\n{msg_str}")
         return "\n".join(lines)
 
+    async def _maybe_consolidate_details(self, provider, session_id: str, state: SessionState):
+        """按配置周期定期整理细节库：将重复/近义条目无损合并。
+
+        触发时机：每次蒸馏成功后检查一次；距上次整理超过配置周期才真正执行 LLM 合并，
+        避免高频调用。仅当配置周期为「从不」、细节过少或尚未到期时跳过。
+        """
+        interval = self.details_merge_interval_sec
+        if not interval:
+            return
+        profile = state.profile
+        if not profile.details:
+            return
+        now = time.time()
+        if (now - (state.metrics.details_last_merge_ts or 0.0)) < interval:
+            return
+        if len(profile.details) < 2:
+            # 条目太少没有整理意义，但标记已检查，避免每次蒸馏都重复判断
+            state.metrics.details_last_merge_ts = now
+            await self._save_state(session_id, state)
+            return
+
+        prompt, keep_prefix = self._build_consolidate_prompt(profile.details)
+        text_chat_kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "system_prompt": CONSOLIDATE_SYSTEM_PROMPT,
+        }
+        distill_model = state.model or (self.distill_models[0] if self.distill_models else "")
+        if distill_model:
+            text_chat_kwargs["model"] = distill_model
+
+        try:
+            res = await provider.text_chat(**text_chat_kwargs)
+            raw_text = getattr(res, "completion_text", str(res))
+            merged = self.engine.parse_consolidate_json(raw_text)
+            if merged:
+                # 只替换被展示的最近部分（旧条目不参与本轮整理，原位拼接，保证无损）
+                profile.details = list(profile.details[:keep_prefix]) + merged
+                state.metrics.details_last_merge_ts = time.time()
+                await self._save_state(session_id, state)
+                logger.debug(f"[rutodistill] Session {session_id} details consolidated to {len(merged)} items.")
+        except Exception as e:
+            logger.debug(f"[rutodistill] Session {session_id} details consolidation failed: {e}")
+
+    def _build_consolidate_prompt(self, details: list) -> tuple:
+        """构造细节库整理请求：在字符预算内展示最近若干条（带编号），返回 (prompt, 未展示前缀条数)。
+
+        未展示的旧条目不参与本轮整理，合并结果只替换被展示的部分（原位拼接），保证不丢旧条目。
+        """
+        budget = 10000
+        sent_rev: list[str] = []
+        used = 0
+        for d in reversed(details):
+            cost = len(d) + 2
+            if used + cost > budget:
+                break
+            sent_rev.append(d)
+            used += cost
+        sent = list(reversed(sent_rev))
+        keep_prefix = len(details) - len(sent)
+        lines = [
+            f"以下是目标用户表达细节清单的一部分，共 {len(sent)} 条（按时间从旧到新编号）：",
+            "",
+        ]
+        for i, d in enumerate(sent, 1):
+            lines.append(f"{i}. {d}")
+        lines.append("")
+        lines.append("请按整理规则输出合并后的完整 JSON 列表（保持顺序，仅合并重复/近义，其余逐字保留）。")
+        return "\n".join(lines), keep_prefix
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在发起对话 LLM 请求前，自适应注入克隆人格 System Prompt 与 extra_user_content"""
@@ -419,7 +523,7 @@ class PersonaDistillerPlugin(Star):
             session_id = self._get_session_id(event)
             state = await self._get_state(session_id)
 
-            sys_prompt, extra_content = PromptBuilder.build_prompts(state.profile, state.mode)
+            sys_prompt, extra_content = PromptBuilder.build_prompts(state.profile, state.mode, self.opening_word_use_prob)
 
             if sys_prompt:
                 # 拟态特征前置注入：放在已有 system_prompt 之前，提高模型遵循度

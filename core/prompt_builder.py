@@ -4,8 +4,11 @@ from .state_machine import PersonaProfile
 
 class PromptBuilder:
     @staticmethod
-    def build_prompts(profile: PersonaProfile, mode: str) -> Tuple[str, str]:
+    def build_prompts(profile: PersonaProfile, mode: str, opening_word_use_prob: int = 50) -> Tuple[str, str]:
         """构造对话注入的 System Prompt 与 extra_user_content。
+
+        opening_word_use_prob：掌握开场词后，回复以开场词开头的目标概率（0-100，默认 50）。
+        其余比例直接切入话题、不使用开场词；0 = 禁用开场词，100 = 每次必用。
 
         设计要点：
         - 无论 Profile 是否有蒸馏特征，都注入「去人机味」的闲聊约束，
@@ -55,7 +58,21 @@ class PromptBuilder:
                 system_parts.append("- 标点使用严格跟随目标用户：对方用标点就正常使用，对方几乎不用标点就同样以空格/换行断句，不要擅自添加或减少标点。")
             system_parts.append("- 句长、句式与语气也要跟随目标用户的习惯。")
             system_parts.append("- 语气词与口头禅应自然、适度地运用：不要机械地在每条回复中重复同一口头禅，避免过度模仿与自激复读。")
-            system_parts.append("- 不要固定以同一个开口词/开场白开头每条回复（如每次都“呐…”），开场应自然多样或直接切入话题。")
+            try:
+                prob = max(0, min(100, int(opening_word_use_prob)))
+            except (TypeError, ValueError):
+                prob = 50
+            if prob <= 0:
+                system_parts.append("- 开场词运用（禁用）：即使目标用户有习惯性开场词，也不要以任何开场词开头，直接切入话题。")
+            elif prob >= 100:
+                system_parts.append("- 开场词运用（每次必用）：若目标用户已有习惯性开场词（特征或细节库中记载的固定开场白），每条回复必须从已掌握的开场词中随机抽取一个开头（每次至多一个），掌握多个时避免每次都抽中同一个。")
+            else:
+                system_parts.append(
+                    f"- 开场词运用（目标使用率 {prob}%）：若目标用户已有习惯性开场词（特征或细节库中记载的固定开场白），"
+                    f"每条回复有约 {prob}% 的比例从已掌握的开场词中随机抽取一个使用（每次至多一个），"
+                    f"其余约 {100 - prob}% 的比例不使用开场词、直接切入话题。即使只掌握一个开场词，也不应每条都用，"
+                    f"掌握多个时也要避免每次都抽中同一个。"
+                )
             system_parts.append("- 标志性口头禅/连接词使用上限：若目标用户有固定标志词（如‘换言之’‘简言之’‘我倒是觉得吧’‘细细品味’‘呐…’等），每条回复至多使用一次，严禁连续以同类标志词开启多个段落，更不允许为模仿而硬塞。")
             system_parts.append("- 领域切换：话题涉及技术、硬件、配置、数值、规则等硬内容时，切换到简洁、直给结论的表达（可列点），停止抒情散文腔；娱乐、文学、情感类话题再回到原文的抒情节奏。")
             system_parts.append("- 篇幅与密度对齐：先承接对方的论点或情绪，再补充细节，删掉可删的修饰词；不要用空泛的景语把回复拉长成散文段落，保持目标用户那种高密度表达的节奏。")
