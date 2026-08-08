@@ -51,14 +51,16 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.6",
+    "1.0.7",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
     HISTORY_MAX_TURNS = 10
-    HISTORY_MAX_CHARS = 600
+    HISTORY_MAX_CHARS = 1000
     # 提取请求中金句锚点最多展示条数（金句存储上限已放宽，展示需截断以防撑爆上下文）
-    EXAMPLES_ANCHOR_MAX = 10
+    EXAMPLES_ANCHOR_MAX = 20
+    # 提取请求中细节库锚点最多展示条数（细节库可能很大，仅展示最近若干条用于去重参考）
+    DETAILS_ANCHOR_MAX = 40
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -150,7 +152,7 @@ class PersonaDistillerPlugin(Star):
         state = await self._get_state(session_id)
         has_data = (
             state.metrics.turns_count > 0
-            or bool(state.profile.style or state.profile.cognition or state.profile.values or state.profile.tone)
+            or bool(state.profile.style or state.profile.cognition or state.profile.values or state.profile.tone or state.profile.details)
         )
         act = (action or "").strip().lower()
 
@@ -219,7 +221,8 @@ class PersonaDistillerPlugin(Star):
             f"• 语气/情绪色彩：{p.tone or '（暂无）'}\n"
             f"• 常用称谓：{p.salutation or '（暂无）'}\n"
             f"• 表达禁忌：{p.taboo or '（暂无）'}\n"
-            f"• 金句示例：{len(p.examples)} 条"
+            f"• 金句示例：{len(p.examples)} 条\n"
+            f"• 细节库：{len(p.details)} 条"
         )
         yield event.plain_result(status_text)
 
@@ -396,6 +399,10 @@ class PersonaDistillerPlugin(Star):
             lines.append(f"金句示例:（共 {len(state.profile.examples)} 条，展示最近 {self.EXAMPLES_ANCHOR_MAX} 条）")
             for ex in state.profile.examples[-self.EXAMPLES_ANCHOR_MAX:]:
                 lines.append(f"- {ex}")
+        if state.profile.details:
+            lines.append(f"细节库:（共 {len(state.profile.details)} 条，展示最近 {self.DETAILS_ANCHOR_MAX} 条用于去重，未展示的同样视为已收录）")
+            for d in state.profile.details[-self.DETAILS_ANCHOR_MAX:]:
+                lines.append(f"- {d}")
         lines.append("")
         prev = list(state.history[:-1])  # 最新一条即 msg_str，单独完整展示
         lines.append(f"【近期用户表达上下文】（逐字原文，按时间从旧到新，共 {len(prev)} 条）")

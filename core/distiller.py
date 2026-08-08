@@ -8,7 +8,7 @@ from astrbot.api import logger
 from .state_machine import PersonaProfile, SessionMetrics, SessionState
 
 EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析与人格蒸馏专家。
-请结合【当前已有 Profile 摘要】与【用户最新输入】，为每个维度输出**更新后的完整表述**（不是增量补丁）。
+请结合【当前已有 Profile 摘要】与【用户最新输入】，为每个维度输出**更新后的完整表述**（不是增量补丁）。唯一例外：new_details 是**增量新增**——只列最新输入中新发现且尚未收录的细节。
 
 返回结果必须为且仅为合法标准的 JSON 格式，包含以下字段：
 {
@@ -17,7 +17,8 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析�
   "values": "重新表述后的价值观、态度倾向、兴趣偏好。无需更新则传空字符串 \\"\\"",
   "taboo": "重新表述后的禁忌、敏感话题或厌恶表达。无需更新则传空字符串 \\"\\"",
   "salutation": "重新表述后的常用称谓或人称代词偏好。无需更新则传空字符串 \\"\\"",
-  "tone": "重新表述后的语气/情绪色彩与意图特征（如戏谑、吐槽、认真论证、平静陈述、敷衍、兴奋等，必要时注明典型触发场景）。无需更新则传空字符串 \\\"\\\"",
+  "tone": "重新表述后的语气/情绪色彩与意图特征（如戏谑、吐槽、认真论证、平静陈述、敷衍、兴奋等，必要时注明典型触发场景）。无需更新则传空字符串 \\"\\"",
+  "new_details": ["从最新输入中新发现且尚未收录的具体可观测细节，每条≤40字；如特定口头禅、句式、标点/空格习惯、括号表情、话题偏好、具体立场等。不得与已有细节重复；无新细节则传 []"],
   "example_candidate": "如该消息极具用户个人特色，可提炼1句典型金句示例（无则传空字符串）",
   "change_magnitude": 0.15
 }
@@ -41,6 +42,8 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析�
 - 区分稳定习惯与偶发用法：仅当某特征在目标用户的表达中**反复、自然地出现**时才标记为固定习惯；偶发的语气词、括号表情或感叹**不要**上升为固定特征，避免下游拟态过度。
 - **tone 维度（语气/情绪色彩）**：从用户原文的语气与意图推断其**惯常的情绪表达方式**，如戏谑（如 "awa（）"）、吐槽、认真论证、平静陈述、敷衍、兴奋等，可注明典型触发场景；
   不要把戏谑、调侃误判为烦躁等负面情绪，也不要把单次心情上升为固定语气特征。
+- **细节库（new_details）**：这是人格长期记忆的核心，用于承载海量细节。逐条提取最新输入中**具体、可观测、尚未收录**的细节（如“用‘简言之’开头”“句间空格分隔”“未闭合的（”“awa（）”“www 前缀”“硬件话题用冒号换行列点”等），每条≤40字，尽量保留原文原始字符。已有细节与概括性总结不要重复放入。
+- **summary 字段保持简洁**：语癖/思维/价值观等字段是“概述层”，保持精炼概括稳定特质即可；具体的逐条细节交给 new_details 承载，避免概述层无限膨胀。
 - 若某维度不需要更新，对应字段传空字符串 ""，表示沿用已有表述。
 - change_magnitude 表示本次更新相比已有特征的改动变化幅度（0.0 ~ 1.0），请客观评估实际重写量。
 - 绝不编造或夸大，保持实事求是。只输出纯 JSON 数据，不要包含 markdown 代码块。"""
@@ -53,6 +56,7 @@ class ProfilePatch(BaseModel):
     taboo: str = Field(default="")
     salutation: str = Field(default="")
     tone: str = Field(default="")
+    new_details: list[str] = Field(default_factory=list)
     example_candidate: str = Field(default="")
     change_magnitude: float = Field(default=0.0)
 
@@ -63,12 +67,14 @@ class DistillerEngine:
         decay_weight: float = 0.7,
         convergence_threshold: float = 0.85,
         change_window: int = 5,
-        max_examples: int = 50,
+        max_examples: int = 200,
+        max_details: int = 1000,
     ):
         self.decay_weight = decay_weight
         self.convergence_threshold = convergence_threshold
         self.change_window = max(1, int(change_window))
         self.max_examples = max(5, int(max_examples))
+        self.max_details = max(50, int(max_details))
 
     def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
         if not raw_text:
@@ -123,6 +129,21 @@ class DistillerEngine:
             if len(profile.examples) > self.max_examples:
                 profile.examples.pop(0)
             changes.append(0.5)  # 新增金句示例视为中等变化
+
+        if patch.new_details:
+            existing = set(profile.details or [])
+            added: list[str] = []
+            for d in patch.new_details:
+                d = str(d).strip()
+                if not d or d in existing or d in added:
+                    continue
+                added.append(d)
+                existing.add(d)
+            if added:
+                profile.details = list(profile.details or []) + added
+                if len(profile.details) > self.max_details:
+                    profile.details = profile.details[-self.max_details:]
+                changes.append(0.3)  # 新增细节库条目视为小幅变化
 
         metrics.turns_count += 1
         metrics.last_update_ts = time.time()

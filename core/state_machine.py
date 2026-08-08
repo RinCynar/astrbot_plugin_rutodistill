@@ -9,6 +9,7 @@ class PersonaProfile(BaseModel):
     taboo: str = Field(default="", description="禁忌与敏感话题点")
     salutation: str = Field(default="", description="常用称谓与代词使用偏好")
     tone: str = Field(default="", description="语气/情绪色彩与意图特征（如戏谑、吐槽、认真论证、平静陈述、敷衍、兴奋等，可注明触发场景）")
+    details: list[str] = Field(default_factory=list, description="逐条可观测的长期细节记忆（口头禅、句式、标点/空格习惯、话题偏好、具体立场等离散事实）")
     examples: list[str] = Field(default_factory=list, description="金句/典型对话/few-shot示例")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -20,6 +21,7 @@ class PersonaProfile(BaseModel):
             return cls()
         clean = dict(data)
         clean["examples"] = [str(x) for x in (data.get("examples") or [])]
+        clean["details"] = [str(x) for x in (data.get("details") or [])]
         return cls(**clean)
 
 

@@ -35,6 +35,7 @@ class PromptBuilder:
                 or profile.tone
                 or profile.taboo
                 or profile.examples
+                or profile.details
             )
         )
         if has_features:
@@ -44,9 +45,18 @@ class PromptBuilder:
             system_parts.append("")
             system_parts.append("【写作格式要求】")
             system_parts.append("- 标点与格式习惯是最重要的强制模仿维度：严格跟随目标用户是否使用标点、是否以空格分隔短句、是否使用括号表情等。")
+            if any(k in (profile.style or "") for k in ("不使用句末标点", "不使用标点", "不用标点", "无标点", "不使用句号", "不用句号", "空格分隔", "换行分隔", "以空格分隔")):
+                system_parts.append("【标点红线（最高优先级）】")
+                system_parts.append("- 目标用户最大的格式习惯是：**不使用任何句末标点与逗号**（句号、逗号、分号、感叹号、问号都不用），句子之间用空格或换行衔接。你的回复正文必须同样不使用这些标点。")
+                system_parts.append("- 停顿、反问、感叹一律用空格或换行表达，例如写「我倒是觉得吧 你说呢」而不是「我倒是觉得吧，你说呢？」。")
+                system_parts.append("- 仅允许出现目标用户确实使用的符号（以特征细节与细节库为准）：全角引号“”、全角破折号——、括号（）或未闭合的（、ASCII 省略号（.../……）等。")
+                system_parts.append("- 发送前自检：把回复再读一遍，删除所有句末标点、逗号、感叹号和问号，改用空格或换行；确保没有擅自添加用户不用的标点。")
+            else:
+                system_parts.append("- 标点使用严格跟随目标用户：对方用标点就正常使用，对方几乎不用标点就同样以空格/换行断句，不要擅自添加或减少标点。")
             system_parts.append("- 句长、句式与语气也要跟随目标用户的习惯。")
-            system_parts.append("- 语气词与口头禅应自然、适度地运用：不要机械地在每条回复中重复同一口头禅（如固定以同一语气词开头），避免过度模仿与自激复读。")
-            system_parts.append("- 标志性口头禅/连接词使用上限：若目标用户有固定标志词（如‘换言之’‘简言之’‘我倒是觉得吧’‘细细品味’等），每条回复至多使用一次，严禁连续以同类标志词开启多个段落，更不允许为模仿而硬塞。")
+            system_parts.append("- 语气词与口头禅应自然、适度地运用：不要机械地在每条回复中重复同一口头禅，避免过度模仿与自激复读。")
+            system_parts.append("- 不要固定以同一个开口词/开场白开头每条回复（如每次都“呐…”），开场应自然多样或直接切入话题。")
+            system_parts.append("- 标志性口头禅/连接词使用上限：若目标用户有固定标志词（如‘换言之’‘简言之’‘我倒是觉得吧’‘细细品味’‘呐…’等），每条回复至多使用一次，严禁连续以同类标志词开启多个段落，更不允许为模仿而硬塞。")
             system_parts.append("- 领域切换：话题涉及技术、硬件、配置、数值、规则等硬内容时，切换到简洁、直给结论的表达（可列点），停止抒情散文腔；娱乐、文学、情感类话题再回到原文的抒情节奏。")
             system_parts.append("- 篇幅与密度对齐：先承接对方的论点或情绪，再补充细节，删掉可删的修饰词；不要用空泛的景语把回复拉长成散文段落，保持目标用户那种高密度表达的节奏。")
             system_parts.append("- 语气同频：先判断对方本条消息的语气（戏谑、吐槽、认真、平静、兴奋…）再回应，用同频语气接话；不要把戏谑、调侃误读为烦躁或负面情绪。")
@@ -67,8 +77,21 @@ class PromptBuilder:
                 system_parts.append(f"- 规避/敏感话语点：{profile.taboo}")
             if profile.examples:
                 system_parts.append("\n【典型表达示例参考】")
-                for ex in profile.examples[:5]:
+                for ex in profile.examples[:8]:
                     system_parts.append(f"• \"{ex}\"")
+            if profile.details:
+                budget = 1200
+                chosen: list[str] = []
+                used = 0
+                for d in reversed(profile.details):
+                    if used + len(d) > budget:
+                        break
+                    chosen.append(d)
+                    used += len(d)
+                if chosen:
+                    system_parts.append("\n【细节库】（逐条可观测的长期记忆，按时间顺序累积，展示最近若干条）")
+                    for d in reversed(chosen):
+                        system_parts.append(f"- {d}")
 
         system_prompt = "\n".join(system_parts)
 
@@ -121,6 +144,12 @@ class PromptBuilder:
             parts.append("以下为目标用户最鲜明的表达样例，应作为句式与用词的参考基准：")
             for i, ex in enumerate(p.examples, 1):
                 parts.append(f"{i}. \"{ex}\"")
+            parts.append("")
+        if p.details:
+            parts.append("## 细节库（长期记忆）")
+            parts.append("以下为逐条可观测的表达细节，按时间顺序累积：")
+            for i, d in enumerate(p.details, 1):
+                parts.append(f"{i}. {d}")
             parts.append("")
         parts.append("---")
         parts.append("# 理解并内化以上内容后，你才是你。请注意时刻再阅并谨记以上信息。")
