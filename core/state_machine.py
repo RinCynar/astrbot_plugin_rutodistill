@@ -22,6 +22,7 @@ class SessionMetrics(BaseModel):
     turns_count: int = Field(default=0, description="有效蒸馏轮数")
     convergence_score: float = Field(default=0.0, description="收敛度得分 0.0-1.0")
     last_update_ts: float = Field(default=0.0, description="最后更新时间戳")
+    change_history: list[float] = Field(default_factory=list, description="最近 N 轮特征变化幅度历史（用于科学计算收敛度）")
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()

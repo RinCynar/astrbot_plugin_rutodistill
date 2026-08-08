@@ -309,7 +309,9 @@ class PersonaDistillerPlugin(Star):
                 f"【当前已有 Profile 摘要】\n"
                 f"语癖: {state.profile.style}\n"
                 f"思维: {state.profile.cognition}\n"
-                f"价值观: {state.profile.values}\n\n"
+                f"价值观: {state.profile.values}\n"
+                f"称谓: {state.profile.salutation}\n"
+                f"禁忌: {state.profile.taboo}\n\n"
                 f"【用户最新输入】\n{msg_str}"
             )
 

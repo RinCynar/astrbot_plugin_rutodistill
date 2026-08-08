@@ -1,45 +1,55 @@
 import json
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 from astrbot.api import logger
 from .state_machine import PersonaProfile, SessionMetrics, SessionState
 
 EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析与人格蒸馏专家。
-请分析用户最新发送的消息，结合当前的 Persona Profile 摘要，提炼增量特征补丁（Patch）。
+请结合【当前已有 Profile 摘要】与【用户最新输入】，为每个维度输出**更新后的完整表述**（不是增量补丁）。
 
 返回结果必须为且仅为合法标准的 JSON 格式，包含以下字段：
 {
-  "style_delta": "语气词、口头禅、标点习惯、句式结构的增量补充",
-  "cognition_delta": "思维方式、逻辑倾向、表达节奏的增量补充",
-  "values_delta": "价值观、态度倾向、兴趣偏好的增量补充",
-  "taboo_delta": "发现的禁忌、敏感话题或厌恶表达",
-  "salutation_delta": "发现的常用称谓或人称代词偏好",
+  "style": "结合已有特征与最新输入重新表述后的语言风格（语癖、口头禅、标点/空格/括号表情等格式习惯、句式习惯）。无需更新则传空字符串 \\"\\"",
+  "cognition": "重新表述后的思维方式、逻辑倾向、表达节奏。无需更新则传空字符串 \\"\\"",
+  "values": "重新表述后的价值观、态度倾向、兴趣偏好。无需更新则传空字符串 \\"\\"",
+  "taboo": "重新表述后的禁忌、敏感话题或厌恶表达。无需更新则传空字符串 \\"\\"",
+  "salutation": "重新表述后的常用称谓或人称代词偏好。无需更新则传空字符串 \\"\\"",
   "example_candidate": "如该消息极具用户个人特色，可提炼1句典型金句示例（无则传空字符串）",
   "change_magnitude": 0.15
 }
 
 注意：
-- 若无新增特征，对应 delta 字段传空字符串 ""。
-- change_magnitude 表示本次更新相比已有特征的改动变化幅度（0.0 ~ 1.0）。
-- 绝不编造或夸大，保持事实求是。只输出纯 JSON 数据，不要包含 markdown 代码块。"""
+- 每个字段都必须是**语法正确、结构清晰、用词精炼**的完整表述，可直接被下游直接使用；
+  优先基于已有特征整体重写以保证一致性与连贯性，禁止用分号堆叠多个互相矛盾的描述。
+- 标点与格式习惯（是否使用标点、是否以空格分隔短句、是否使用括号表情）是风格的重要维度，务必捕捉。
+- 若某维度不需要更新，对应字段传空字符串 ""，表示沿用已有表述。
+- change_magnitude 表示本次更新相比已有特征的改动变化幅度（0.0 ~ 1.0），请客观评估实际重写量。
+- 绝不编造或夸大，保持实事求是。只输出纯 JSON 数据，不要包含 markdown 代码块。"""
 
 
 class ProfilePatch(BaseModel):
-    style_delta: str = Field(default="")
-    cognition_delta: str = Field(default="")
-    values_delta: str = Field(default="")
-    taboo_delta: str = Field(default="")
-    salutation_delta: str = Field(default="")
+    style: str = Field(default="")
+    cognition: str = Field(default="")
+    values: str = Field(default="")
+    taboo: str = Field(default="")
+    salutation: str = Field(default="")
     example_candidate: str = Field(default="")
     change_magnitude: float = Field(default=0.0)
 
 
 class DistillerEngine:
-    def __init__(self, decay_weight: float = 0.7, convergence_threshold: float = 0.85):
+    def __init__(
+        self,
+        decay_weight: float = 0.7,
+        convergence_threshold: float = 0.85,
+        change_window: int = 5,
+    ):
         self.decay_weight = decay_weight
         self.convergence_threshold = convergence_threshold
+        self.change_window = max(1, int(change_window))
 
     def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
         if not raw_text:
@@ -56,37 +66,60 @@ class DistillerEngine:
             logger.debug(f"[rutodistill] Failed to parse JSON patch from LLM output: {e}. Raw: {raw_text[:100]}")
             return None
 
+    @staticmethod
+    def _change_magnitude(current: str, new: str) -> float:
+        """客观计算两个字段表述间的变化幅度（0.0 无变化 ~ 1.0 完全变化）。
+
+        基于字符串相似度，不依赖 LLM 自报数值。
+        """
+        if not new:
+            return 0.0
+        if not current:
+            return 1.0  # 从无到有视为大变化
+        similarity = SequenceMatcher(None, current, new).ratio()
+        return round(max(0.0, min(1.0, 1.0 - similarity)), 4)
+
     def merge_patch(self, state: SessionState, patch: ProfilePatch) -> SessionState:
         profile = state.profile
         metrics = state.metrics
 
-        def _merge_str(current: str, delta: str) -> str:
-            if not delta or delta in current:
-                return current
-            if not current:
-                return delta
-            return f"{current}；{delta}"
+        changes: list[float] = []
 
-        profile.style = _merge_str(profile.style, patch.style_delta)
-        profile.cognition = _merge_str(profile.cognition, patch.cognition_delta)
-        profile.values = _merge_str(profile.values, patch.values_delta)
-        profile.taboo = _merge_str(profile.taboo, patch.taboo_delta)
-        profile.salutation = _merge_str(profile.salutation, patch.salutation_delta)
+        def _apply(field: str, new_value: str) -> None:
+            current = getattr(profile, field)
+            if not new_value or new_value == current:
+                return
+            changes.append(self._change_magnitude(current, new_value))
+            setattr(profile, field, new_value)
+
+        _apply("style", patch.style)
+        _apply("cognition", patch.cognition)
+        _apply("values", patch.values)
+        _apply("taboo", patch.taboo)
+        _apply("salutation", patch.salutation)
 
         if patch.example_candidate and patch.example_candidate not in profile.examples:
             profile.examples.append(patch.example_candidate)
             if len(profile.examples) > 5:
                 profile.examples.pop(0)
+            changes.append(0.5)  # 新增金句示例视为中等变化
 
         metrics.turns_count += 1
         metrics.last_update_ts = time.time()
 
-        # Update convergence score using moving average decay of change_magnitude
-        current_mag = min(max(patch.change_magnitude, 0.0), 1.0)
-        stability = 1.0 - current_mag
-        metrics.convergence_score = round(
-            self.decay_weight * metrics.convergence_score + (1.0 - self.decay_weight) * stability,
-            4
-        )
+        # 本轮真实变化幅度 = 各字段变化幅度的平均值（无任何变化则为 0.0）
+        round_magnitude = (sum(changes) / len(changes)) if changes else 0.0
+
+        # 维护最近 N 轮变化历史
+        history = list(metrics.change_history or [])
+        history.append(round_magnitude)
+        metrics.change_history = history[-self.change_window:]
+
+        # 收敛度 = 1 - 最近 N 轮平均变化幅度：特征越稳定，收敛度越接近 1.0
+        if metrics.change_history:
+            avg_change = sum(metrics.change_history) / len(metrics.change_history)
+        else:
+            avg_change = 1.0
+        metrics.convergence_score = round(max(0.0, min(1.0, 1.0 - avg_change)), 4)
 
         return state

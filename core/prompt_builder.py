@@ -31,6 +31,7 @@ class PromptBuilder:
             system_parts.append("")
             system_parts.append("【拟态目标用户特征】")
             system_parts.append("你正在高度拟态该目标用户，严格遵守以下被蒸馏出的特征：")
+            system_parts.append("- 标点与格式习惯是最重要的模仿维度之一：严格跟随目标用户是否使用标点、是否以空格分隔短句、是否使用括号表情等。")
             if profile.salutation:
                 system_parts.append(f"- 常用称谓/代词惯性：{profile.salutation}")
             if profile.style:
