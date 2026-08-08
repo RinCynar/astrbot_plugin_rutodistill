@@ -5,44 +5,55 @@ from .state_machine import PersonaProfile
 class PromptBuilder:
     @staticmethod
     def build_prompts(profile: PersonaProfile, mode: str) -> Tuple[str, str]:
-        """
-        Returns (system_prompt_addition, extra_user_content)
-        """
-        if not profile or (
-            not profile.style
-            and not profile.cognition
-            and not profile.values
-            and not profile.salutation
-        ):
-            return ("", "")
+        """构造对话注入的 System Prompt 与 extra_user_content。
 
+        设计要点：
+        - 无论 Profile 是否有蒸馏特征，都注入「去人机味」的闲聊约束，
+          避免模型输出教程、分点、表格、客服套话。
+        - Profile 有特征时，追加目标用户的拟态特征。
+        """
         system_parts = [
-            "【拟态对话与人格克隆指令】",
-            "你正在高度拟态并深度克隆特定目标用户的语言风格、思维逻辑与行为范式。",
-            "请严格遵守以下特征要求："
+            "【对话风格约束】",
+            "你正在与一位真实的朋友自然闲聊，绝对不是客服助手。",
+            "严格要求：",
+            "- 回复自然、简短、口语化，像真人聊天；禁止结构化输出（分点、表格、标题、markdown 列表）。",
+            "- 禁止公式化套话，例如「有什么可以帮您」「祝您愉快」「如果你需要帮助可以告诉我」等。",
+            "- 主动呼应对方的话题、情绪与观点，像朋友一样接话，可以表达自己的看法、调侃或好奇。",
+            "- 跟随对方的用词、语气与句长调整表达节奏。",
+            "- 可以自由使用语气词、颜文字，或在括号里描写动作神态。",
         ]
 
-        if profile.salutation:
-            system_parts.append(f"- 常用称谓/代词惯性：{profile.salutation}")
-        if profile.style:
-            system_parts.append(f"- 语言风格与语气词：{profile.style}")
-        if profile.cognition:
-            system_parts.append(f"- 思维方式与逻辑习惯：{profile.cognition}")
-        if profile.values:
-            system_parts.append(f"- 核心价值观与立场偏好：{profile.values}")
-        if profile.taboo:
-            system_parts.append(f"- 规避/敏感话语点：{profile.taboo}")
-
-        if profile.examples:
-            system_parts.append("\n【典型表达示例参考】")
-            for ex in profile.examples[:3]:
-                system_parts.append(f"• \"{ex}\"")
+        has_features = bool(
+            profile
+            and (profile.style or profile.cognition or profile.values or profile.salutation)
+        )
+        if has_features:
+            system_parts.append("")
+            system_parts.append("【拟态目标用户特征】")
+            system_parts.append("你正在高度拟态该目标用户，严格遵守以下被蒸馏出的特征：")
+            if profile.salutation:
+                system_parts.append(f"- 常用称谓/代词惯性：{profile.salutation}")
+            if profile.style:
+                system_parts.append(f"- 语言风格与语气词：{profile.style}")
+            if profile.cognition:
+                system_parts.append(f"- 思维方式与逻辑习惯：{profile.cognition}")
+            if profile.values:
+                system_parts.append(f"- 核心价值观与立场偏好：{profile.values}")
+            if profile.taboo:
+                system_parts.append(f"- 规避/敏感话语点：{profile.taboo}")
+            if profile.examples:
+                system_parts.append("\n【典型表达示例参考】")
+                for ex in profile.examples[:3]:
+                    system_parts.append(f"• \"{ex}\"")
 
         system_prompt = "\n".join(system_parts)
 
         extra_user_content = ""
         if mode == "distill":
-            extra_user_content = "[系统提示: 当前处于人格蒸馏学习模式，请保持对话自然顺畅，适度呼应用户的沟通方式。]"
+            extra_user_content = (
+                "[系统提示：当前处于人格蒸馏学习模式。请像朋友一样自然闲聊，"
+                "在对话中观察并呼应用户的表达习惯；绝对不要输出教程、步骤、表格或结构化清单。]"
+            )
 
         return (system_prompt, extra_user_content)
 
