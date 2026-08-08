@@ -1,7 +1,7 @@
 name: astrbot_plugin_rutodistill
 display_name: 世另我
 desc: 通过多轮交互对用户语言风格、认知模式与价值观进行高精度蒸馏，自动学习并拟态用户的表达方式。
-version: 1.0.3
+version: 1.0.4
 author: RinCynar
 repo: https://github.com/RinCynar/astrbot_plugin_rutodistill
 astrbot_version: ">=4.11.4"

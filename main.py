@@ -51,7 +51,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.2",
+    "1.0.4",
 )
 class PersonaDistillerPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
@@ -90,6 +90,49 @@ class PersonaDistillerPlugin(Star):
     async def _save_state(self, session_id: str, state: SessionState):
         await self.store.save_session(session_id, state.to_dict())
 
+    async def _get_provider(self, event: AstrMessageEvent = None):
+        """获取当前使用的对话 Provider（兼容同步/异步调用与新旧 API）"""
+        try:
+            if event is not None:
+                umo = getattr(event, "unified_msg_origin", None)
+                provider = self.context.get_using_provider(umo=umo)
+            else:
+                provider = self.context.get_using_provider()
+            if asyncio.iscoroutine(provider):
+                provider = await provider
+            return provider
+        except Exception as e:
+            logger.debug(f"[rutodistill] Could not fetch provider: {e}")
+            return None
+
+    async def _generate_icebreaker(self, state: SessionState = None) -> str:
+        """用 LLM 生成更接近人类口吻的引导话题；失败或生成质量不佳时回退到内置模板。"""
+        provider = await self._get_provider()
+        if provider:
+            prompt = (
+                "请用一句口语化、自然的开放式问题开启一段轻松的闲聊。"
+                "目的是引导对方放松地打开话匣子，自然地流露出个人表达习惯。\n"
+                "要求：\n"
+                "- 像真实朋友随口问出来的话，不要像问卷调查或面试题；\n"
+                "- 避免「如果…你会怎么」「描述一下…」「你怎么看待…」等套路句式；\n"
+                "- 若对方有已知偏好，请结合偏好让问题更贴合本人；\n"
+            )
+            if state and (state.profile.values or state.profile.style):
+                prompt += f"\n对方已知偏好：{state.profile.values or ''} {state.profile.style or ''}\n"
+            prompt += "\n请只输出这句问题本身，不要解释、不要前缀、不要引号。"
+            try:
+                res = await provider.text_chat(
+                    prompt=prompt,
+                    system_prompt="你是一个擅长自然闲聊的真人朋友。",
+                )
+                text = getattr(res, "completion_text", str(res))
+                text = text.strip().strip('"“”').strip()
+                if text and 2 <= len(text) <= 80:
+                    return text
+            except Exception as e:
+                logger.debug(f"[rutodistill] Icebreaker generation failed: {e}")
+        return random.choice(ICE_BREAKER_TOPICS)
+
     # --- 指令处理（r- 前缀简洁结构） ---
 
     @filter.command("r-start")
@@ -107,7 +150,7 @@ class PersonaDistillerPlugin(Star):
         if act in ("reset", "init", "yes", "y"):
             state = SessionState(mode=SessionState.MODE_DISTILL)
             await self._save_state(session_id, state)
-            topic = random.choice(ICE_BREAKER_TOPICS)
+            topic = await self._generate_icebreaker(state)
             yield event.plain_result(
                 "已重新初始化并进入【蒸馏学习】模式，旧的蒸馏数据已清空。\n\n"
                 "🎯 **先来聊聊这个吧**：\n"
@@ -128,7 +171,7 @@ class PersonaDistillerPlugin(Star):
         # 首次进入：主动抛出随机话题引导对话
         state.mode = SessionState.MODE_DISTILL
         await self._save_state(session_id, state)
-        topic = random.choice(ICE_BREAKER_TOPICS)
+        topic = await self._generate_icebreaker(state)
         yield event.plain_result(
             "已进入【蒸馏学习】模式。系统将在后续对话中增量萃取你的表达风格。\n\n"
             "🎯 **先来聊聊这个吧**：\n"
@@ -294,16 +337,7 @@ class PersonaDistillerPlugin(Star):
             if state.mode != SessionState.MODE_DISTILL:
                 return
 
-            provider = None
-            try:
-                umo = getattr(event, "unified_msg_origin", None)
-                # v4.27.2 中 Context.get_using_provider 为同步方法，不能 await
-                provider = self.context.get_using_provider(umo=umo)
-                if asyncio.iscoroutine(provider):
-                    provider = await provider
-            except Exception as e:
-                logger.debug(f"[rutodistill] Could not fetch provider: {e}")
-
+            provider = await self._get_provider(event)
             if not provider:
                 return
 
@@ -313,9 +347,13 @@ class PersonaDistillerPlugin(Star):
                 f"思维: {state.profile.cognition}\n"
                 f"价值观: {state.profile.values}\n"
                 f"称谓: {state.profile.salutation}\n"
-                f"禁忌: {state.profile.taboo}\n\n"
-                f"【用户最新输入】\n{msg_str}"
+                f"禁忌: {state.profile.taboo}\n"
             )
+            if state.profile.examples:
+                user_prompt += (
+                    "金句示例:\n" + "\n".join(f"- {ex}" for ex in state.profile.examples) + "\n"
+                )
+            user_prompt += f"\n【用户最新输入（逐字原文，含原始空格与缺失标点）】\n{msg_str}"
 
             # 蒸馏模型优先级：会话级覆盖 > 全局配置首个候选 > Provider 默认
             distill_model = state.model or (self.distill_models[0] if self.distill_models else "")
