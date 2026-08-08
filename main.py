@@ -50,8 +50,8 @@ ICE_BREAKER_TOPICS = [
 @register(
     "astrbot_plugin_rutodistill",
     "RinCynar",
-    "人格蒸馏与克隆插件：多轮交互高精度蒸馏用户语言风格、认知与价值观，并支持拟态对话",
-    "1.0.0",
+    "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
+    "1.0.2",
 )
 class PersonaDistillerPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
@@ -60,9 +60,8 @@ class PersonaDistillerPlugin(Star):
         # 用于运行时注入「蒸馏模型指定」下拉框的模型选项）
         self.config = config if config is not None else {}
         self.store = JSONStore("astrbot_plugin_rutodistill")
-        decay_weight = self.config.get("decay_weight", 0.7)
-        convergence_threshold = self.config.get("convergence_threshold", 0.85)
-        self.engine = DistillerEngine(decay_weight=decay_weight, convergence_threshold=convergence_threshold)
+        # 收敛度基于最近 N 轮客观变化幅度计算（DistillerEngine 内部参数）
+        self.engine = DistillerEngine()
         # 全局蒸馏模型候选（_conf_schema.json 中 distill_model，兼容字符串或列表）
         distill_model_cfg = self.config.get("distill_model") or []
         if isinstance(distill_model_cfg, str):
@@ -91,53 +90,64 @@ class PersonaDistillerPlugin(Star):
     async def _save_state(self, session_id: str, state: SessionState):
         await self.store.save_session(session_id, state.to_dict())
 
-    # --- 指令处理 ---
+    # --- 指令处理（r- 前缀简洁结构） ---
 
-    @filter.command("distill")
-    async def mode_distill(self, event: AstrMessageEvent):
-        """切换至「蒸馏学习」模式"""
+    @filter.command("r-start")
+    async def r_start(self, event: AstrMessageEvent, action: str = ""):
+        """进入「蒸馏学习」模式：初次使用自动抛出随机话题，已有数据时提示是否初始化（/r-start reset 确认）"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
-        # 首次进入蒸馏模式（尚无任何蒸馏数据）时，主动抛出随机话题引导对话，
-        # 避免出现公式化的"有什么可以帮您"。
-        is_first_enter = (
-            state.metrics.turns_count == 0
-            and not state.profile.style
-            and not state.profile.cognition
-            and not state.profile.values
+        has_data = (
+            state.metrics.turns_count > 0
+            or bool(state.profile.style or state.profile.cognition or state.profile.values)
         )
-        state.mode = SessionState.MODE_DISTILL
-        await self._save_state(session_id, state)
-        if is_first_enter:
+        act = (action or "").strip().lower()
+
+        # 确认初始化：清空现有数据重新开始
+        if act in ("reset", "init", "yes", "y"):
+            state = SessionState(mode=SessionState.MODE_DISTILL)
+            await self._save_state(session_id, state)
             topic = random.choice(ICE_BREAKER_TOPICS)
             yield event.plain_result(
-                "已切换至【蒸馏学习】模式。系统将在后续对话中增量萃取你的表达风格。\n\n"
+                "已重新初始化并进入【蒸馏学习】模式，旧的蒸馏数据已清空。\n\n"
                 "🎯 **先来聊聊这个吧**：\n"
                 f"{topic}"
             )
-        else:
-            yield event.plain_result("已切换至【蒸馏学习】模式。系统将在后续对话中进行增量特征萃取与 Profile 更新。")
+            return
 
-    @filter.command("chat")
-    async def mode_chat(self, event: AstrMessageEvent):
-        """切换至「拟态对话」模式"""
-        session_id = self._get_session_id(event)
-        state = await self._get_state(session_id)
-        state.mode = SessionState.MODE_CHAT
+        # 已有数据：提示是否初始化
+        if has_data:
+            state.mode = SessionState.MODE_DISTILL
+            await self._save_state(session_id, state)
+            yield event.plain_result(
+                f"已切换至【蒸馏学习】模式（已有 {state.metrics.turns_count} 轮蒸馏数据）。\n"
+                "若想清空现有数据重新开始，请发送 `/r-start reset` 确认初始化。"
+            )
+            return
+
+        # 首次进入：主动抛出随机话题引导对话
+        state.mode = SessionState.MODE_DISTILL
         await self._save_state(session_id, state)
-        yield event.plain_result("已切换至【拟态对话】模式。将暂停特征蒸馏，全力以当前 Profile 进行深度沉浸拟态。")
+        topic = random.choice(ICE_BREAKER_TOPICS)
+        yield event.plain_result(
+            "已进入【蒸馏学习】模式。系统将在后续对话中增量萃取你的表达风格。\n\n"
+            "🎯 **先来聊聊这个吧**：\n"
+            f"{topic}"
+        )
 
-    @filter.command("safe")
-    async def mode_safe(self, event: AstrMessageEvent):
-        """切换至「静态锚定」模式"""
+    @filter.command("r-lock")
+    async def r_lock(self, event: AstrMessageEvent):
+        """切换至「静态锚定-拟态对话」模式：Profile 锁定只读，持续以当前特征拟态对话"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
         state.mode = SessionState.MODE_SAFE
         await self._save_state(session_id, state)
-        yield event.plain_result("已切换至【静态锚定】模式。当前 Profile 已锁定为只读。")
+        yield event.plain_result(
+            "已切换至【静态锚定-拟态对话】模式。当前 Profile 已锁定为只读，对话将以已蒸馏特征持续拟态。"
+        )
 
-    @filter.command("status")
-    async def show_status(self, event: AstrMessageEvent):
+    @filter.command("r-status")
+    async def r_status(self, event: AstrMessageEvent):
         """查看当前蒸馏状态与 Profile 卡片"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
@@ -145,7 +155,7 @@ class PersonaDistillerPlugin(Star):
         m = state.metrics
 
         status_text = (
-            "📊 **人格蒸馏与克隆 - 状态卡片**\n"
+            "📊 **世另我 - 状态卡片**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"• **当前模式**：`{state.mode}`\n"
             f"• **蒸馏轮数**：{m.turns_count} 轮\n"
@@ -161,17 +171,9 @@ class PersonaDistillerPlugin(Star):
         )
         yield event.plain_result(status_text)
 
-    @filter.command("distill_reset")
-    async def reset_profile(self, event: AstrMessageEvent):
-        """重置当前会话的人格 Profile"""
-        session_id = self._get_session_id(event)
-        state = SessionState()
-        await self._save_state(session_id, state)
-        yield event.plain_result("已成功重置当前会话的人格 Profile 与统计指标。")
-
-    @filter.command("distill_export")
-    async def export_profile(self, event: AstrMessageEvent, format: str = ""):
-        """导出当前 Profile：默认输出可直接粘贴进 AstrBot 人格设定的 markdown；/distill_export json 输出原始数据"""
+    @filter.command("r-export")
+    async def r_export(self, event: AstrMessageEvent, format: str = ""):
+        """导出当前 Profile：默认输出可直接粘贴进 AstrBot 人格设定的 markdown；/r-export json 输出原始数据"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
         fmt = (format or "").strip().lower()
@@ -190,9 +192,9 @@ class PersonaDistillerPlugin(Star):
             )
         yield event.plain_result(export_text)
 
-    @filter.command("distill_model")
-    async def cmd_distill_model(self, event: AstrMessageEvent, model: str = ""):
-        """查看/设置当前会话的蒸馏模型；不带参数时列出当前 Provider 启用的模型供选择"""
+    @filter.command("r-info")
+    async def r_info(self, event: AstrMessageEvent, model: str = ""):
+        """查看当前 Provider 启用的模型列表并设置/清除蒸馏模型（支持序号或模型名）"""
         session_id = self._get_session_id(event)
         state = await self._get_state(session_id)
 
@@ -218,10 +220,10 @@ class PersonaDistillerPlugin(Star):
                     marker = "✅" if m == current else "•"
                     lines.append(f"{i}. {marker} `{m}`")
                 lines.append("")
-                lines.append("用法：`/distill_model <序号或模型名>` 设置；`/distill_model clear` 恢复默认。")
+                lines.append("用法：`/r-info <序号或模型名>` 设置；`/r-info clear` 恢复默认。")
             else:
                 lines.append("（无法获取当前 Provider 的模型列表）")
-                lines.append("可直接使用 `/distill_model <模型名>` 手动指定。")
+                lines.append("可直接使用 `/r-info <模型名>` 手动指定。")
             yield event.plain_result("\n".join(lines))
             return
 
@@ -346,8 +348,9 @@ class PersonaDistillerPlugin(Star):
             sys_prompt, extra_content = PromptBuilder.build_prompts(state.profile, state.mode)
 
             if sys_prompt:
+                # 拟态特征前置注入：放在已有 system_prompt 之前，提高模型遵循度
                 if req.system_prompt:
-                    req.system_prompt = f"{req.system_prompt}\n\n{sys_prompt}"
+                    req.system_prompt = f"{sys_prompt}\n\n{req.system_prompt}"
                 else:
                     req.system_prompt = sys_prompt
 

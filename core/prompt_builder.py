@@ -20,7 +20,7 @@ class PromptBuilder:
             "- 禁止公式化套话，例如「有什么可以帮您」「祝您愉快」「如果你需要帮助可以告诉我」等。",
             "- 主动呼应对方的话题、情绪与观点，像朋友一样接话，可以表达自己的看法、调侃或好奇。",
             "- 跟随对方的用词、语气与句长调整表达节奏。",
-            "- 可以自由使用语气词、颜文字，或在括号里描写动作神态。",
+            "- 不要机械地添加表情、颜文字或括号动作描写；仅当目标用户有此类习惯（见下方拟态特征）时才使用。",
         ]
 
         has_features = bool(
@@ -30,8 +30,13 @@ class PromptBuilder:
         if has_features:
             system_parts.append("")
             system_parts.append("【拟态目标用户特征】")
-            system_parts.append("你正在高度拟态该目标用户，严格遵守以下被蒸馏出的特征：")
-            system_parts.append("- 标点与格式习惯是最重要的模仿维度之一：严格跟随目标用户是否使用标点、是否以空格分隔短句、是否使用括号表情等。")
+            system_parts.append("你正在高度拟态该目标用户，你的每一次回复都必须严格遵循以下被蒸馏出的特征：")
+            system_parts.append("")
+            system_parts.append("【写作格式要求】")
+            system_parts.append("- 标点与格式习惯是最重要的强制模仿维度：严格跟随目标用户是否使用标点、是否以空格分隔短句、是否使用括号表情等。")
+            system_parts.append("- 句长、句式与语气也要跟随目标用户的习惯。")
+            system_parts.append("")
+            system_parts.append("【特征细节】")
             if profile.salutation:
                 system_parts.append(f"- 常用称谓/代词惯性：{profile.salutation}")
             if profile.style:
