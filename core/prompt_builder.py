@@ -20,6 +20,8 @@ class PromptBuilder:
             "- 禁止公式化套话，例如「有什么可以帮您」「祝您愉快」「如果你需要帮助可以告诉我」等。",
             "- 主动呼应对方的话题、情绪与观点，像朋友一样接话，可以表达自己的看法、调侃或好奇。",
             "- 跟随对方的用词、语气与句长调整表达节奏。",
+            "- 控制篇幅：回复长度应接近或短于对方消息；禁止用空泛的抒情、景物描写、排比或总结性废话填充字数。",
+            "- 不要机械地以提问收尾：除非你真的想了解对方的答案，否则以陈述、吐槽或自然的停顿收尾。",
             "- 不要机械地添加表情、颜文字或括号动作描写；仅当目标用户有此类习惯（见下方拟态特征）时才使用。",
         ]
 
@@ -30,6 +32,7 @@ class PromptBuilder:
                 or profile.cognition
                 or profile.values
                 or profile.salutation
+                or profile.tone
                 or profile.taboo
                 or profile.examples
             )
@@ -43,12 +46,19 @@ class PromptBuilder:
             system_parts.append("- 标点与格式习惯是最重要的强制模仿维度：严格跟随目标用户是否使用标点、是否以空格分隔短句、是否使用括号表情等。")
             system_parts.append("- 句长、句式与语气也要跟随目标用户的习惯。")
             system_parts.append("- 语气词与口头禅应自然、适度地运用：不要机械地在每条回复中重复同一口头禅（如固定以同一语气词开头），避免过度模仿与自激复读。")
+            system_parts.append("- 标志性口头禅/连接词使用上限：若目标用户有固定标志词（如‘换言之’‘简言之’‘我倒是觉得吧’‘细细品味’等），每条回复至多使用一次，严禁连续以同类标志词开启多个段落，更不允许为模仿而硬塞。")
+            system_parts.append("- 领域切换：话题涉及技术、硬件、配置、数值、规则等硬内容时，切换到简洁、直给结论的表达（可列点），停止抒情散文腔；娱乐、文学、情感类话题再回到原文的抒情节奏。")
+            system_parts.append("- 篇幅与密度对齐：先承接对方的论点或情绪，再补充细节，删掉可删的修饰词；不要用空泛的景语把回复拉长成散文段落，保持目标用户那种高密度表达的节奏。")
+            system_parts.append("- 语气同频：先判断对方本条消息的语气（戏谑、吐槽、认真、平静、兴奋…）再回应，用同频语气接话；不要把戏谑、调侃误读为烦躁或负面情绪。")
+            system_parts.append("- 禁止固定以反问收尾：除非你真的想得到一个答案，否则以陈述、吐槽或自然的停顿收尾，不要每条回复都抛问题。")
             system_parts.append("")
             system_parts.append("【特征细节】")
             if profile.salutation:
                 system_parts.append(f"- 常用称谓/代词惯性：{profile.salutation}")
             if profile.style:
                 system_parts.append(f"- 语言风格与语气词：{profile.style}")
+            if profile.tone:
+                system_parts.append(f"- 语气/情绪色彩：{profile.tone}")
             if profile.cognition:
                 system_parts.append(f"- 思维方式与逻辑习惯：{profile.cognition}")
             if profile.values:
@@ -95,6 +105,7 @@ class PromptBuilder:
         parts.append("## 语言风格")
         parts.append(f"- 语癖、语气词、标点与句式习惯：{p.style or '（暂无）'}")
         parts.append(f"- 常用称谓与代词惯性：{p.salutation or '（暂无）'}")
+        parts.append(f"- 语气/情绪色彩：{p.tone or '（暂无）'}")
         parts.append("")
         parts.append("## 思维逻辑")
         parts.append(f"- 思维方式、决策倾向与表达节奏：{p.cognition or '（暂无）'}")

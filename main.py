@@ -51,7 +51,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.5",
+    "1.0.6",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -150,7 +150,7 @@ class PersonaDistillerPlugin(Star):
         state = await self._get_state(session_id)
         has_data = (
             state.metrics.turns_count > 0
-            or bool(state.profile.style or state.profile.cognition or state.profile.values)
+            or bool(state.profile.style or state.profile.cognition or state.profile.values or state.profile.tone)
         )
         act = (action or "").strip().lower()
 
@@ -216,6 +216,7 @@ class PersonaDistillerPlugin(Star):
             f"• 表达语癖：{p.style or '（暂无）'}\n"
             f"• 思维逻辑：{p.cognition or '（暂无）'}\n"
             f"• 价值观/立场：{p.values or '（暂无）'}\n"
+            f"• 语气/情绪色彩：{p.tone or '（暂无）'}\n"
             f"• 常用称谓：{p.salutation or '（暂无）'}\n"
             f"• 表达禁忌：{p.taboo or '（暂无）'}\n"
             f"• 金句示例：{len(p.examples)} 条"
@@ -388,6 +389,7 @@ class PersonaDistillerPlugin(Star):
         lines.append(f"语癖: {state.profile.style or '（暂无）'}")
         lines.append(f"思维: {state.profile.cognition or '（暂无）'}")
         lines.append(f"价值观: {state.profile.values or '（暂无）'}")
+        lines.append(f"语气: {state.profile.tone or '（暂无）'}")
         lines.append(f"称谓: {state.profile.salutation or '（暂无）'}")
         lines.append(f"禁忌: {state.profile.taboo or '（暂无）'}")
         if state.profile.examples:

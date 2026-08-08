@@ -8,6 +8,7 @@ class PersonaProfile(BaseModel):
     values: str = Field(default="", description="核心价值观、态度与偏好")
     taboo: str = Field(default="", description="禁忌与敏感话题点")
     salutation: str = Field(default="", description="常用称谓与代词使用偏好")
+    tone: str = Field(default="", description="语气/情绪色彩与意图特征（如戏谑、吐槽、认真论证、平静陈述、敷衍、兴奋等，可注明触发场景）")
     examples: list[str] = Field(default_factory=list, description="金句/典型对话/few-shot示例")
 
     def to_dict(self) -> Dict[str, Any]:
