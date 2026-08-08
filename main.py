@@ -51,9 +51,15 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.4",
+    "1.0.5",
 )
 class PersonaDistillerPlugin(Star):
+    # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
+    HISTORY_MAX_TURNS = 10
+    HISTORY_MAX_CHARS = 600
+    # 提取请求中金句锚点最多展示条数（金句存储上限已放宽，展示需截断以防撑爆上下文）
+    EXAMPLES_ANCHOR_MAX = 10
+
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         # 保留 AstrBotConfig 实例引用（其 .schema 属性会被配置面板动态读取，
@@ -68,6 +74,8 @@ class PersonaDistillerPlugin(Star):
             distill_model_cfg = [distill_model_cfg] if distill_model_cfg else []
         self.distill_models = [m for m in distill_model_cfg if m and isinstance(m, str)]
         self.bg_tasks = set()
+        # 每个会话一把锁，串行化后台蒸馏任务，防止并发消息互相覆盖已累积的历史/特征
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         # 启动后台任务填充配置面板「蒸馏模型指定」下拉框选项。
         # on_astrbot_loaded 仅在 AstrBot 启动时触发一次，运行中安装/重载插件时
         # 不会触发，因此额外启动带重试的后台任务，保证下拉框能取到模型列表。
@@ -201,8 +209,8 @@ class PersonaDistillerPlugin(Star):
             "📊 **世另我 - 状态卡片**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"• **当前模式**：`{state.mode}`\n"
-            f"• **蒸馏轮数**：{m.turns_count} 轮\n"
-            f"• **特征收敛度**：{m.convergence_score * 100:.1f}%\n"
+            f"• **蒸馏轮数**：{m.turns_count or 0} 轮\n"
+            f"• **特征收敛度**：{(m.convergence_score or 0.0) * 100:.1f}%\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "🧬 **已提取特征**：\n"
             f"• 表达语癖：{p.style or '（暂无）'}\n"
@@ -333,48 +341,67 @@ class PersonaDistillerPlugin(Star):
     async def _async_distill_worker(self, session_id: str, msg_str: str, event: AstrMessageEvent):
         """后台异步特征蒸馏 Task，绝不阻塞主聊天回复链路"""
         try:
-            state = await self._get_state(session_id)
-            if state.mode != SessionState.MODE_DISTILL:
-                return
-
             provider = await self._get_provider(event)
             if not provider:
                 return
+            # 锁外快速模式检查，避免无谓加锁
+            if (await self._get_state(session_id)).mode != SessionState.MODE_DISTILL:
+                return
 
-            user_prompt = (
-                f"【当前已有 Profile 摘要】\n"
-                f"语癖: {state.profile.style}\n"
-                f"思维: {state.profile.cognition}\n"
-                f"价值观: {state.profile.values}\n"
-                f"称谓: {state.profile.salutation}\n"
-                f"禁忌: {state.profile.taboo}\n"
-            )
-            if state.profile.examples:
-                user_prompt += (
-                    "金句示例:\n" + "\n".join(f"- {ex}" for ex in state.profile.examples) + "\n"
-                )
-            user_prompt += f"\n【用户最新输入（逐字原文，含原始空格与缺失标点）】\n{msg_str}"
+            lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                state = await self._get_state(session_id)
+                if state.mode != SessionState.MODE_DISTILL:
+                    return
+                # 累积用户原文到会话历史：这是跨轮次特征保持的关键上下文，
+                # 防止后续风格迥异的输入把已蒸馏特征整体覆盖丢失。
+                state.history = (list(state.history or []) + [msg_str])[-self.HISTORY_MAX_TURNS:]
+                # 历史先落盘（快照）：即使后续 LLM 调用/解析失败，跨轮次上下文也不丢失
+                await self._save_state(session_id, state)
 
-            # 蒸馏模型优先级：会话级覆盖 > 全局配置首个候选 > Provider 默认
-            distill_model = state.model or (self.distill_models[0] if self.distill_models else "")
-            text_chat_kwargs: Dict[str, Any] = {
-                "prompt": user_prompt,
-                "system_prompt": EXTRACTION_SYSTEM_PROMPT,
-            }
-            if distill_model:
-                text_chat_kwargs["model"] = distill_model
+                user_prompt = self._build_extraction_prompt(state, msg_str)
 
-            res = await provider.text_chat(**text_chat_kwargs)
+                # 蒸馏模型优先级：会话级覆盖 > 全局配置首个候选 > Provider 默认
+                distill_model = state.model or (self.distill_models[0] if self.distill_models else "")
+                text_chat_kwargs: Dict[str, Any] = {
+                    "prompt": user_prompt,
+                    "system_prompt": EXTRACTION_SYSTEM_PROMPT,
+                }
+                if distill_model:
+                    text_chat_kwargs["model"] = distill_model
 
-            raw_text = getattr(res, "completion_text", str(res))
-            patch = self.engine.parse_patch_json(raw_text)
+                res = await provider.text_chat(**text_chat_kwargs)
 
-            if patch:
-                updated_state = self.engine.merge_patch(state, patch)
-                await self._save_state(session_id, updated_state)
-                logger.debug(f"[rutodistill] Session {session_id} updated profile patch successfully.")
+                raw_text = getattr(res, "completion_text", str(res))
+                patch = self.engine.parse_patch_json(raw_text)
+
+                if patch:
+                    updated_state = self.engine.merge_patch(state, patch)
+                    await self._save_state(session_id, updated_state)
+                    logger.debug(f"[rutodistill] Session {session_id} updated profile patch successfully.")
         except Exception as e:
             logger.debug(f"[rutodistill] Error during async background distillation worker: {e}")
+
+    def _build_extraction_prompt(self, state: SessionState, msg_str: str) -> str:
+        """构造蒸馏提取请求：既有特征锚点 + 近期用户表达上下文（逐字原文）+ 最新输入。"""
+        lines = ["【当前已有 Profile 摘要】（已蒸馏的既有特征，只要仍然成立就必须保留）"]
+        lines.append(f"语癖: {state.profile.style or '（暂无）'}")
+        lines.append(f"思维: {state.profile.cognition or '（暂无）'}")
+        lines.append(f"价值观: {state.profile.values or '（暂无）'}")
+        lines.append(f"称谓: {state.profile.salutation or '（暂无）'}")
+        lines.append(f"禁忌: {state.profile.taboo or '（暂无）'}")
+        if state.profile.examples:
+            lines.append(f"金句示例:（共 {len(state.profile.examples)} 条，展示最近 {self.EXAMPLES_ANCHOR_MAX} 条）")
+            for ex in state.profile.examples[-self.EXAMPLES_ANCHOR_MAX:]:
+                lines.append(f"- {ex}")
+        lines.append("")
+        prev = list(state.history[:-1])  # 最新一条即 msg_str，单独完整展示
+        lines.append(f"【近期用户表达上下文】（逐字原文，按时间从旧到新，共 {len(prev)} 条）")
+        for i, h in enumerate(prev, 1):
+            lines.append(f"[{i}] {str(h)[:self.HISTORY_MAX_CHARS]}")
+        lines.append("")
+        lines.append(f"【用户最新输入（逐字原文，含原始空格与缺失标点）】\n{msg_str}")
+        return "\n".join(lines)
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):

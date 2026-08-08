@@ -22,6 +22,10 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个高精度的用户表达模式分析�
 }
 
 注意：
+- **累积而非覆盖（最重要）**：蒸馏目标是让特征库随轮次不断**丰富立体**。你必须把【已有特征】中仍然成立的部分**完整保留**，
+  并与本次输入体现的新特征**整合**成一份比之前更全面的表述。**严禁**只依据最新一条输入重写字段，从而丢弃已蒸馏出的稳定特征。
+  当最新输入风格与已有特征差异较大时（如从文学评论切换到硬件清单），应**并列保留两者**，用「当…时/在…场景下」等限定词组织，而不是相互覆盖。
+  仅当旧特征被目标用户的新行为**明确否定**时才移除。
 - 每个字段都必须是**语法正确、结构清晰、用词精炼**的完整表述，可直接被下游直接使用；
   优先基于已有特征整体重写以保证一致性与连贯性，禁止用分号堆叠多个互相矛盾的描述。
 - **格式保真（最重要）**：【用户最新输入】是目标用户的**逐字原文**。描述标点与格式习惯时，
@@ -53,10 +57,12 @@ class DistillerEngine:
         decay_weight: float = 0.7,
         convergence_threshold: float = 0.85,
         change_window: int = 5,
+        max_examples: int = 50,
     ):
         self.decay_weight = decay_weight
         self.convergence_threshold = convergence_threshold
         self.change_window = max(1, int(change_window))
+        self.max_examples = max(5, int(max_examples))
 
     def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
         if not raw_text:
@@ -107,7 +113,7 @@ class DistillerEngine:
 
         if patch.example_candidate and patch.example_candidate not in profile.examples:
             profile.examples.append(patch.example_candidate)
-            if len(profile.examples) > 5:
+            if len(profile.examples) > self.max_examples:
                 profile.examples.pop(0)
             changes.append(0.5)  # 新增金句示例视为中等变化
 

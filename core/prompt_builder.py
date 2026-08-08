@@ -25,7 +25,14 @@ class PromptBuilder:
 
         has_features = bool(
             profile
-            and (profile.style or profile.cognition or profile.values or profile.salutation)
+            and (
+                profile.style
+                or profile.cognition
+                or profile.values
+                or profile.salutation
+                or profile.taboo
+                or profile.examples
+            )
         )
         if has_features:
             system_parts.append("")
@@ -50,7 +57,7 @@ class PromptBuilder:
                 system_parts.append(f"- 规避/敏感话语点：{profile.taboo}")
             if profile.examples:
                 system_parts.append("\n【典型表达示例参考】")
-                for ex in profile.examples[:3]:
+                for ex in profile.examples[:5]:
                     system_parts.append(f"• \"{ex}\"")
 
         system_prompt = "\n".join(system_parts)

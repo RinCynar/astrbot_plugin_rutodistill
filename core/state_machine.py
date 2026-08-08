@@ -15,7 +15,11 @@ class PersonaProfile(BaseModel):
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PersonaProfile":
-        return cls(**data) if data else cls()
+        if not data:
+            return cls()
+        clean = dict(data)
+        clean["examples"] = [str(x) for x in (data.get("examples") or [])]
+        return cls(**clean)
 
 
 class SessionMetrics(BaseModel):
@@ -29,7 +33,15 @@ class SessionMetrics(BaseModel):
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionMetrics":
-        return cls(**data) if data else cls()
+        if not data:
+            return cls()
+        # 防御旧版本/损坏数据：null 字段归一为默认值，避免下游算术/展示崩溃
+        return cls(
+            turns_count=int(data.get("turns_count", 0) or 0),
+            convergence_score=float(data.get("convergence_score", 0.0) or 0.0),
+            last_update_ts=float(data.get("last_update_ts", 0.0) or 0.0),
+            change_history=[float(x) for x in (data.get("change_history") or [])],
+        )
 
 
 class SessionState:
@@ -43,12 +55,15 @@ class SessionState:
         profile: PersonaProfile = None,
         metrics: SessionMetrics = None,
         model: str = "",
+        history: list = None,
     ):
         self.mode = mode if mode in (self.MODE_DISTILL, self.MODE_CHAT, self.MODE_SAFE) else self.MODE_DISTILL
         self.profile = profile or PersonaProfile()
         self.metrics = metrics or SessionMetrics()
         self.model = model or ""
         """会话级蒸馏模型覆盖；空字符串表示跟随全局配置 / Provider 默认模型"""
+        self.history = list(history) if history else []
+        """最近若干轮用户消息逐字原文（用于蒸馏时提供跨轮次上下文，防止特征被单轮输入覆盖丢失）"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -56,6 +71,7 @@ class SessionState:
             "profile": self.profile.to_dict(),
             "metrics": self.metrics.to_dict(),
             "model": self.model,
+            "history": self.history,
         }
 
     @classmethod
@@ -67,4 +83,5 @@ class SessionState:
             profile=PersonaProfile.from_dict(data.get("profile", {})),
             metrics=SessionMetrics.from_dict(data.get("metrics", {})),
             model=data.get("model", ""),
+            history=data.get("history", []),
         )
