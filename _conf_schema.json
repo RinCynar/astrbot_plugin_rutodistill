@@ -15,7 +15,7 @@
     "max": 100
   },
   "detail_merge_interval": {
-    "type": "str",
+    "type": "string",
     "description": "细节库定期整理周期",
     "hint": "定期检查细节库中可合并的重复/近义条目并做无损合并；选择“从不”则仅保留写入时的精确去重。整理在每次蒸馏后按周期触发。",
     "default": "每周",
