@@ -6,14 +6,6 @@
     "default": [],
     "options": []
   },
-  "opening_word_use_prob": {
-    "type": "int",
-    "description": "开场词使用概率",
-    "hint": "掌握开场词后，插件在每条回复发起前自行判定：约该比例（%）的回复允许以一个开场词开头（从已掌握的开场词中随机轮换），其余回复硬性禁止开场词、直接切入话题。0 = 禁用开场词，100 = 每次必用。",
-    "default": 50,
-    "min": 0,
-    "max": 100
-  },
   "detail_merge_interval": {
     "type": "string",
     "description": "细节库定期整理周期",

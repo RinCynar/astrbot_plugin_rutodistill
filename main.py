@@ -52,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.9",
+    "1.0.10",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -76,11 +76,6 @@ class PersonaDistillerPlugin(Star):
         if isinstance(distill_model_cfg, str):
             distill_model_cfg = [distill_model_cfg] if distill_model_cfg else []
         self.distill_models = [m for m in distill_model_cfg if m and isinstance(m, str)]
-        # 开场词使用概率（0-100，默认 50）：掌握开场词后，回复以开场词开头的目标比例
-        try:
-            self.opening_word_use_prob = max(0, min(100, int(self.config.get("opening_word_use_prob", 50) or 50)))
-        except (TypeError, ValueError):
-            self.opening_word_use_prob = 50
         # 细节库定期整理周期（秒）："从不"（或非法值映射为每周兜底）；0 = 不整理，仅保留写入时精确去重
         self.details_merge_interval_sec = self._resolve_merge_interval(self.config.get("detail_merge_interval", "每周"))
         self.bg_tasks = set()
@@ -523,7 +518,7 @@ class PersonaDistillerPlugin(Star):
             session_id = self._get_session_id(event)
             state = await self._get_state(session_id)
 
-            sys_prompt, extra_content = PromptBuilder.build_prompts(state.profile, state.mode, self.opening_word_use_prob)
+            sys_prompt, extra_content = PromptBuilder.build_prompts(state.profile, state.mode)
 
             if sys_prompt:
                 # 拟态特征前置注入：放在已有 system_prompt 之前，提高模型遵循度
