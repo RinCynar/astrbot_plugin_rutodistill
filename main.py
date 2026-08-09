@@ -52,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.8",
+    "1.0.9",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
