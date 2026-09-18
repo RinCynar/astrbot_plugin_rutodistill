@@ -52,6 +52,52 @@ class JSONStore:
             self._cache[session_id] = default_data
             return default_data
 
+    def _get_bak_path(self, session_id: str) -> Path:
+        safe_id = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in session_id)
+        return self.base_dir / f"{safe_id}.json.bak"
+
+    async def create_backup(self, session_id: str) -> bool:
+        """为指定会话创建快照备份（.json.bak），用于防误清空与回滚恢复"""
+        async with self.lock:
+            file_path = self._get_file_path(session_id)
+            if not file_path.exists():
+                return False
+            bak_path = self._get_bak_path(session_id)
+
+            def _copy():
+                import shutil
+                shutil.copy2(file_path, bak_path)
+
+            try:
+                await asyncio.to_thread(_copy)
+                return True
+            except Exception as e:
+                logger.error(f"[rutodistill] Failed to backup session {session_id}: {e}")
+                return False
+
+    async def rollback_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """从 .json.bak 快照还原数据，更新内存缓存并写回主文件，成功返回快照数据字典"""
+        async with self.lock:
+            bak_path = self._get_bak_path(session_id)
+            if not bak_path.exists():
+                return None
+            file_path = self._get_file_path(session_id)
+
+            def _restore():
+                import shutil
+                with open(bak_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                shutil.copy2(bak_path, file_path)
+                return data
+
+            try:
+                data = await asyncio.to_thread(_restore)
+                self._cache[session_id] = data
+                return data
+            except Exception as e:
+                logger.error(f"[rutodistill] Failed to rollback session {session_id}: {e}")
+                return None
+
     async def save_session(self, session_id: str, data: Dict[str, Any]) -> bool:
         async with self.lock:
             self._cache[session_id] = data

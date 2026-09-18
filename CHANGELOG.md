@@ -1,5 +1,19 @@
 # 更新日志
 
+## 1.0.13 (2026-09-18)
+
+### 新增特性与重要优化
+- **细节库增量与金句权重平滑衰减（收敛度算法优化）**：
+  - `DistillerEngine.merge_patch` 中，将 `new_details` 与 `example_candidate` 引入的单轮变化幅度权重随已蒸馏轮数与已有数量进行平滑衰减；
+  - 彻底解决长期蒸馏中仅因日常偶发新增 1~2 条离散事实细节，导致收敛度被强行压制在 70% 无法自然达到高位（≥85%）的问题，使收敛度精准聚焦于核心性格与思维模式的稳定性。
+- **细节库无损整理（Consolidate）触发门槛保护**：
+  - 增加最小条目总数门槛（`DETAILS_CONSOLIDATE_MIN_ITEMS = 15`）与增量条目门槛（`DETAILS_CONSOLIDATE_MIN_DELTA = 5`）；
+  - 当细节库条目少于 15 条或自上次整理后新增不足 5 条时，不启动大模型整理，大幅节约 API Token 消耗并缩短后台并发开销。
+- **数据层自动快照与灾备回滚（`/r-rollback`）**：
+  - `JSONStore` 新增 `create_backup` 与 `rollback_session`；
+  - 在执行清空重置（`/r-start reset`）与导入覆盖（`/r-import`）前自动生成 `.json.bak` 快照备份；
+  - 新增 `/r-rollback` 指令，支持一键撤销误操作、秒级回滚到上一版本 Profile 快照。
+
 ## 1.0.12 (2026-09-18)
 
 ### 新增特性与重要优化

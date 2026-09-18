@@ -31,6 +31,7 @@ class SessionMetrics(BaseModel):
     last_update_ts: float = Field(default=0.0, description="最后更新时间戳")
     change_history: list[float] = Field(default_factory=list, description="最近 N 轮特征变化幅度历史（用于科学计算收敛度）")
     details_last_merge_ts: float = Field(default=0.0, description="细节库最近一次定期整理的时间戳（0 = 尚未整理过）")
+    details_last_merge_count: int = Field(default=0, description="细节库最近一次定期整理时的条目数量")
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -46,6 +47,7 @@ class SessionMetrics(BaseModel):
             last_update_ts=float(data.get("last_update_ts", 0.0) or 0.0),
             change_history=[float(x) for x in (data.get("change_history") or [])],
             details_last_merge_ts=float(data.get("details_last_merge_ts", 0.0) or 0.0),
+            details_last_merge_count=int(data.get("details_last_merge_count", 0) or 0),
         )
 
 

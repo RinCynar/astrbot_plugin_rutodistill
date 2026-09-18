@@ -52,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.12",
+    "1.0.13",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -62,6 +62,9 @@ class PersonaDistillerPlugin(Star):
     EXAMPLES_ANCHOR_MAX = 20
     # 提取请求中细节库锚点最多展示条数（细节库可能很大，仅展示最近若干条用于去重参考）
     DETAILS_ANCHOR_MAX = 40
+    # 细节库定期整理的门槛保护：条目总数不少于 15 条且自上次整理新增不少于 5 条才启动 LLM 整理
+    DETAILS_CONSOLIDATE_MIN_ITEMS = 15
+    DETAILS_CONSOLIDATE_MIN_DELTA = 5
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -167,11 +170,14 @@ class PersonaDistillerPlugin(Star):
 
         # 确认初始化：清空现有数据重新开始
         if act in ("reset", "init", "yes", "y"):
+            # 在清空重置前自动创建快照备份，支持一键回滚
+            await self.store.create_backup(session_id)
             state = SessionState(mode=SessionState.MODE_DISTILL)
             await self._save_state(session_id, state)
             topic = await self._generate_icebreaker(state)
             yield event.plain_result(
-                "已重新初始化并进入【蒸馏学习】模式，旧的蒸馏数据已清空。\n\n"
+                "已重新初始化并进入【蒸馏学习】模式，旧的蒸馏数据已清空。\n"
+                "（旧数据已自动归档为快照备份，如需恢复可发送 `/r-rollback` 回滚）\n\n"
                 "🎯 **先来聊聊这个吧**：\n"
                 f"{topic}"
             )
@@ -283,6 +289,8 @@ class PersonaDistillerPlugin(Star):
             return
 
         try:
+            # 导入前先为旧数据创建快照备份，支持后悔回滚
+            await self.store.create_backup(session_id)
             state = await self._get_state(session_id)
             new_profile = PersonaProfile.from_dict(data)
             state.profile = new_profile
@@ -296,6 +304,7 @@ class PersonaDistillerPlugin(Star):
 
             lines = [
                 "✅ **Profile 导入成功！**",
+                "（旧数据已自动归档为快照备份，如需撤销可发送 `/r-rollback`）",
                 "━━━━━━━━━━━━━━━━━━",
                 f"• 语言语癖：{new_profile.style or '（无）'}",
                 f"• 思维逻辑：{new_profile.cognition or '（无）'}",
@@ -312,6 +321,26 @@ class PersonaDistillerPlugin(Star):
         except Exception as e:
             yield event.plain_result(f"❌ 导入失败，Profile 校验异常：{e}")
 
+    @filter.command("r-rollback")
+    async def r_rollback(self, event: AstrMessageEvent):
+        """回滚至上一次操作前的 Profile 快照备份（如撤销误重置或撤销误导入）"""
+        session_id = self._get_session_id(event)
+        data = await self.store.rollback_session(session_id)
+        if not data:
+            yield event.plain_result("❌ 未找到可回滚的快照备份（.json.bak 不存在或暂未创建备份）。")
+            return
+        state = SessionState.from_dict(data)
+        yield event.plain_result(
+            "⏪ **回滚成功！**\n"
+            "已将 Profile 与会话状态恢复至上一个快照备份。\n\n"
+            f"• 当前模式：`{state.mode}`\n"
+            f"• 蒸馏轮数：{state.metrics.turns_count} 轮\n"
+            f"• 特征收敛度：{(state.metrics.convergence_score or 0.0) * 100:.1f}%\n"
+            f"• 细节库：{len(state.profile.details)} 条\n"
+            f"• 金句示例：{len(state.profile.examples)} 条\n\n"
+            "💡 可发送 `/r-status` 查看完整状态卡片。"
+        )
+
     @filter.command("r-help")
     async def r_help(self, event: AstrMessageEvent):
         """查看「世另我」指令说明与使用指南"""
@@ -323,6 +352,7 @@ class PersonaDistillerPlugin(Star):
             "• `/r-status`：查看当前蒸馏轮数、客观收敛度及 Profile 特征卡片\n"
             "• `/r-export`：导出可直接粘贴进 AstrBot 人设的 Markdown Prompt（`/r-export json` 输出原始数据）\n"
             "• `/r-import <json>`：导入已导出的 Profile JSON 数据并覆盖当前人格\n"
+            "• `/r-rollback`：一键回滚至上一次操作前的快照备份（撤销误重置或误导入）\n"
             "• `/r-info`：查看当前 Provider 启用的模型列表，并设置/清除蒸馏专用模型\n"
             "• `/r-help`：查看本指令指南卡片\n"
             "━━━━━━━━━━━━━━━━━━\n"
@@ -537,8 +567,15 @@ class PersonaDistillerPlugin(Star):
         now = time.time()
         if (now - (state.metrics.details_last_merge_ts or 0.0)) < interval:
             return
-        if len(profile.details) < 2:
-            # 条目太少没有整理意义，但标记已检查，避免每次蒸馏都重复判断
+        # 门槛 1：条目总数少于 15 条时，近义重复率极低，无需启动昂贵的 LLM 整理
+        if len(profile.details) < self.DETAILS_CONSOLIDATE_MIN_ITEMS:
+            state.metrics.details_last_merge_ts = now
+            await self._save_state(session_id, state)
+            return
+
+        # 门槛 2：自上次整理以来新增少于 5 条，冗余增量极小，无需重复整理
+        last_count = getattr(state.metrics, "details_last_merge_count", 0) or 0
+        if (len(profile.details) - last_count) < self.DETAILS_CONSOLIDATE_MIN_DELTA:
             state.metrics.details_last_merge_ts = now
             await self._save_state(session_id, state)
             return
@@ -560,6 +597,7 @@ class PersonaDistillerPlugin(Star):
                 # 只替换被展示的最近部分（旧条目不参与本轮整理，原位拼接，保证无损）
                 profile.details = list(profile.details[:keep_prefix]) + merged
                 state.metrics.details_last_merge_ts = time.time()
+                state.metrics.details_last_merge_count = len(profile.details)
                 await self._save_state(session_id, state)
                 logger.debug(f"[rutodistill] Session {session_id} details consolidated to {len(merged)} items.")
         except Exception as e:

@@ -36,6 +36,7 @@
 | `/r-status` | 查看当前蒸馏轮数、收敛度及 Profile 特征卡片（当收敛度达到高位时自动提示锁定建议） |
 | `/r-export` | 导出可直接粘贴进 AstrBot 人格设定的 Markdown 人设 Prompt（对齐 Essentia Persona Framework v1.0）；`/r-export json` 可输出原始 Profile 数据 |
 | `/r-import` | 导入已导出的 Profile JSON 数据并覆盖当前人格（`/r-import <JSON文本>`，支持直接粘贴 `/r-export json` 的内容） |
+| `/r-rollback` | 一键回滚至上一次操作前的快照备份（撤销误重置或误导入） |
 | `/r-info` | 查看当前 Provider 启用的模型列表并设置/清除蒸馏模型（支持序号或模型名） |
 | `/r-help` | 查看插件指令速查与工作流指南卡片 |
 

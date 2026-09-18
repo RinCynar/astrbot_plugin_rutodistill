@@ -222,7 +222,9 @@ class DistillerEngine:
             profile.examples.append(patch.example_candidate)
             if len(profile.examples) > self.max_examples:
                 profile.examples.pop(0)
-            changes.append(0.5)  # 新增金句示例视为中等变化
+            # 金句示例新增幅度随已有金句数量平滑衰减，避免后期仅因记入金句而拉低收敛度
+            ex_weight = max(0.1, round(0.5 / (1.0 + len(profile.examples) * 0.08), 4))
+            changes.append(ex_weight)
 
         if patch.new_details:
             existing = set(profile.details or [])
@@ -236,7 +238,10 @@ class DistillerEngine:
             if added:
                 # 细节库不设上限：长期记忆随轮次无限累积，重复/近义由定期整理（CONSOLIDATE）合并
                 profile.details = list(profile.details or []) + added
-                changes.append(0.3)  # 新增细节库条目视为小幅变化
+                # 细节库新增权重随有效轮数平滑衰减：前期探索阶段赋权较高（~0.3），
+                # 后期稳定沉淀阶段重点关注核心性格/思维是否收敛，避免无上限累积的离散细节阻碍收敛度自然达到高位
+                detail_weight = max(0.04, round(0.3 / (1.0 + (metrics.turns_count or 0) * 0.035), 4))
+                changes.append(detail_weight)
 
         metrics.turns_count += 1
         metrics.last_update_ts = time.time()
