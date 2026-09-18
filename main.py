@@ -52,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.10",
+    "1.0.11",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -128,6 +128,7 @@ class PersonaDistillerPlugin(Star):
                 "要求：\n"
                 "- 像真实朋友随口问出来的话，不要像问卷调查或面试题；\n"
                 "- 避免「如果…你会怎么」「描述一下…」「你怎么看待…」等套路句式；\n"
+                "- 严禁包含系统 Emoji 黄脸表情符号，保持真人自然表达；\n"
                 "- 若对方有已知偏好，请结合偏好让问题更贴合本人；\n"
             )
             if state and (state.profile.values or state.profile.style):
