@@ -52,7 +52,7 @@ ICE_BREAKER_TOPICS = [
     "astrbot_plugin_rutodistill",
     "RinCynar",
     "世另我：通过多轮交互高精度蒸馏用户语言风格、认知与价值观，自动学习并拟态用户的表达方式。",
-    "1.0.11",
+    "1.0.12",
 )
 class PersonaDistillerPlugin(Star):
     # 蒸馏时提供的近期用户表达上下文规模：最多保留多少轮、单条截断长度（字符）
@@ -92,9 +92,14 @@ class PersonaDistillerPlugin(Star):
             logger.debug(f"[rutodistill] Could not start model options background task: {e}")
 
     def _get_session_id(self, event: AstrMessageEvent) -> str:
+        scope = str(self.config.get("distill_scope", "按用户隔离（推荐）")).strip().lower()
+        sender_id = str(event.get_sender_id())
+        # 按用户隔离（默认）：无论在群聊还是私聊，均以发送者独立建立和沉淀人格，避免群内多人风格混淆
+        if "用户" in scope or "user" in scope:
+            return f"user_{sender_id}"
         if hasattr(event, "unified_msg_origin") and event.unified_msg_origin:
             return str(event.unified_msg_origin)
-        return str(event.get_sender_id())
+        return f"user_{sender_id}"
 
     async def _get_state(self, session_id: str) -> SessionState:
         raw_data = await self.store.get_session(session_id, default_factory=lambda: SessionState().to_dict())
@@ -228,6 +233,12 @@ class PersonaDistillerPlugin(Star):
             f"• 金句示例：{len(p.examples)} 条\n"
             f"• 细节库：{len(p.details)} 条"
         )
+        if (m.convergence_score or 0.0) >= 0.85 and state.mode == SessionState.MODE_DISTILL:
+            status_text += (
+                "\n━━━━━━━━━━━━━━━━━━\n"
+                "💡 **提示**：当前特征收敛度已达到高位（≥85%），风格特征已基本稳定！\n"
+                "可发送 `/r-lock` 锁定进入【拟态对话】模式，或使用 `/r-export` 导出人设 Prompt。"
+            )
         yield event.plain_result(status_text)
 
     @filter.command("r-export")
@@ -250,6 +261,74 @@ class PersonaDistillerPlugin(Star):
                 f"{persona}"
             )
         yield event.plain_result(export_text)
+
+    @filter.command("r-import")
+    async def r_import(self, event: AstrMessageEvent, json_content: str = ""):
+        """导入已导出的 Profile JSON 数据并覆盖当前人格（支持直接粘贴 JSON 或代码块）"""
+        session_id = self._get_session_id(event)
+        raw_input = (json_content or "").strip()
+        if not raw_input:
+            yield event.plain_result(
+                "❌ 请提供要导入的 JSON 数据。\n\n"
+                "用法：`/r-import <JSON文本>`\n"
+                "提示：可将 `/r-export json` 导出的完整内容直接粘贴在指令后。"
+            )
+            return
+
+        data = DistillerEngine.extract_json_object(raw_input)
+        if not data:
+            yield event.plain_result(
+                "❌ 未能解析到合法的 JSON 对象，请检查格式后重试。"
+            )
+            return
+
+        try:
+            state = await self._get_state(session_id)
+            new_profile = PersonaProfile.from_dict(data)
+            state.profile = new_profile
+            # 导入后标记基础轮数与高收敛度，避免未初始化
+            if state.metrics.turns_count == 0:
+                state.metrics.turns_count = 1
+            if state.metrics.convergence_score < 0.85:
+                state.metrics.convergence_score = 0.85
+            state.metrics.last_update_ts = time.time()
+            await self._save_state(session_id, state)
+
+            lines = [
+                "✅ **Profile 导入成功！**",
+                "━━━━━━━━━━━━━━━━━━",
+                f"• 语言语癖：{new_profile.style or '（无）'}",
+                f"• 思维逻辑：{new_profile.cognition or '（无）'}",
+                f"• 情绪色彩：{new_profile.tone or '（无）'}",
+                f"• 价值观：{new_profile.values or '（无）'}",
+                f"• 细节库：{len(new_profile.details)} 条",
+                f"• 金句示例：{len(new_profile.examples)} 条",
+                "━━━━━━━━━━━━━━━━━━",
+                "💡 **建议操作**：",
+                "- 发送 `/r-lock` 锁定当前特征进入【拟态对话】模式；",
+                "- 或发送 `/r-status` 查看完整特征卡片。",
+            ]
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            yield event.plain_result(f"❌ 导入失败，Profile 校验异常：{e}")
+
+    @filter.command("r-help")
+    async def r_help(self, event: AstrMessageEvent):
+        """查看「世另我」指令说明与使用指南"""
+        help_text = (
+            "📖 **世另我 (RutoDistill) - 指令指南**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "• `/r-start`：进入【蒸馏学习】模式（首次进入自动抛出破冰话题；`/r-start reset` 确认清空重来）\n"
+            "• `/r-lock`：切换至【静态锚定-拟态对话】模式（Profile 锁定只读，不再更新特征，保持拟态稳定）\n"
+            "• `/r-status`：查看当前蒸馏轮数、客观收敛度及 Profile 特征卡片\n"
+            "• `/r-export`：导出可直接粘贴进 AstrBot 人设的 Markdown Prompt（`/r-export json` 输出原始数据）\n"
+            "• `/r-import <json>`：导入已导出的 Profile JSON 数据并覆盖当前人格\n"
+            "• `/r-info`：查看当前 Provider 启用的模型列表，并设置/清除蒸馏专用模型\n"
+            "• `/r-help`：查看本指令指南卡片\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 **推荐工作流**：在对话中正常闲聊（后台自动蒸馏学习） ➔ 当收敛度 ≥85% 发送 `/r-lock` 锁定 ➔ 即可开始与你的高度拟态克隆体对话！"
+        )
+        yield event.plain_result(help_text)
 
     @filter.command("r-info")
     async def r_info(self, event: AstrMessageEvent, model: str = ""):

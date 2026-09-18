@@ -87,17 +87,40 @@ class PromptBuilder:
                 for ex in profile.examples[:8]:
                     system_parts.append(f"• \"{ex}\"")
             if profile.details:
-                budget = 1200
-                chosen: list[str] = []
-                used = 0
-                for d in reversed(profile.details):
-                    if used + len(d) > budget:
-                        break
-                    chosen.append(d)
-                    used += len(d)
+                total_budget = 1200
+                details = profile.details
+                total_len = sum(len(d) for d in details)
+                if total_len <= total_budget:
+                    chosen = details
+                else:
+                    # 双采样（Bimodal Sampling）：保留早期奠基细节（~350字符）+ 最新活跃细节（~850字符）
+                    head_budget = 350
+                    tail_budget = total_budget - head_budget
+
+                    head_chosen: list[str] = []
+                    head_used = 0
+                    for d in details:
+                        if head_used + len(d) > head_budget:
+                            break
+                        head_chosen.append(d)
+                        head_used += len(d)
+
+                    head_count = len(head_chosen)
+                    remaining = details[head_count:]
+                    tail_chosen_rev: list[str] = []
+                    tail_used = 0
+                    for d in reversed(remaining):
+                        if tail_used + len(d) > tail_budget:
+                            break
+                        tail_chosen_rev.append(d)
+                        tail_used += len(d)
+                    tail_chosen = list(reversed(tail_chosen_rev))
+
+                    chosen = head_chosen + tail_chosen
+
                 if chosen:
-                    system_parts.append("\n【细节库】（逐条可观测的长期记忆，按时间顺序累积，展示最近若干条）")
-                    for d in reversed(chosen):
+                    system_parts.append("\n【细节库】（逐条可观测的长期记忆，兼顾早期确立的奠基习惯与近期活跃细节）")
+                    for d in chosen:
                         system_parts.append(f"- {d}")
 
         system_prompt = "\n".join(system_parts)

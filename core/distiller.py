@@ -87,36 +87,102 @@ class DistillerEngine:
         self.change_window = max(1, int(change_window))
         self.max_examples = max(5, int(max_examples))
 
-    def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
+    @staticmethod
+    def extract_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
+        """从 LLM 输出中多阶段强韧提取 JSON 字典对象。
+
+        可防御：
+        1. 带有客套前言或分析结论（如“好的，这是为您提取的特征：\n```json...”）；
+        2. Markdown 代码块不规范或无代码块包裹；
+        3. 尾部解释或附加符号。
+        """
         if not raw_text:
             return None
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned).strip()
 
+        # 1. 尝试从 markdown 代码块中提取
+        md_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text, re.IGNORECASE)
+        if md_match:
+            candidate = md_match.group(1).strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+
+        # 2. 尝试提取最外层花括号字典
+        brace_match = re.search(r"\{[\s\S]*\}", raw_text)
+        if brace_match:
+            candidate = brace_match.group(0).strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+
+        # 3. 兜底直接解析
         try:
-            data = json.loads(cleaned)
-            return ProfilePatch(**data)
-        except Exception as e:
-            logger.debug(f"[rutodistill] Failed to parse JSON patch from LLM output: {e}. Raw: {raw_text[:100]}")
+            data = json.loads(raw_text.strip())
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def extract_json_list(raw_text: str) -> Optional[list]:
+        """从 LLM 输出中强韧提取 JSON 列表，兼容 {"details": [...]} 或纯列表格式。"""
+        if not raw_text:
             return None
+
+        # 1. 优先尝试提取包含 details 字段的字典
+        obj = DistillerEngine.extract_json_object(raw_text)
+        if obj and isinstance(obj.get("details"), list):
+            return [str(d).strip() for d in obj["details"] if str(d).strip()]
+
+        # 2. 尝试从 markdown 代码块中提取列表
+        md_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text, re.IGNORECASE)
+        if md_match:
+            candidate = md_match.group(1).strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, list):
+                    return [str(d).strip() for d in data if str(d).strip()]
+            except Exception:
+                pass
+
+        # 3. 尝试提取最外层中括号列表
+        bracket_match = re.search(r"\[[\s\S]*\]", raw_text)
+        if bracket_match:
+            candidate = bracket_match.group(0).strip()
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, list):
+                    return [str(d).strip() for d in data if str(d).strip()]
+            except Exception:
+                pass
+
+        return None
+
+    def parse_patch_json(self, raw_text: str) -> Optional[ProfilePatch]:
+        data = self.extract_json_object(raw_text)
+        if data:
+            try:
+                return ProfilePatch(**data)
+            except Exception as e:
+                logger.debug(f"[rutodistill] Failed to validate ProfilePatch from extracted data: {e}")
+                return None
+        logger.debug(f"[rutodistill] Failed to extract JSON object from LLM output. Raw snippet: {raw_text[:120]}")
+        return None
 
     def parse_consolidate_json(self, raw_text: str) -> Optional[list]:
-        """解析细节库整理结果 JSON（{"details": [...]}），失败返回 None。"""
-        if not raw_text:
-            return None
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned).strip()
-        try:
-            data = json.loads(cleaned)
-            details = data.get("details")
-            if isinstance(details, list):
-                return [str(d).strip() for d in details if str(d).strip()]
-        except Exception as e:
-            logger.debug(f"[rutodistill] Failed to parse consolidation JSON: {e}. Raw: {raw_text[:100]}")
+        """解析细节库整理结果 JSON（{"details": [...]} 或纯列表），失败返回 None。"""
+        res = self.extract_json_list(raw_text)
+        if res is not None:
+            return res
+        logger.debug(f"[rutodistill] Failed to extract consolidation list from LLM output. Raw snippet: {raw_text[:120]}")
         return None
 
     @staticmethod
